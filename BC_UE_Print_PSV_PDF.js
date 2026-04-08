@@ -20,8 +20,8 @@ define([
   const TEMPLATE_ID       = 'CUSTTMPL_118_11915859_SB1_110'; // Advanced PDF template script ID
   const ROOT_FOLDER_NAME  = 'PSV Reports';
   const TASK_STATUS_CLOSED = 'COMPLETE'; // NetSuite internal value for Task "Completed/Closed"
-  const SUITELET_SCRIPT   = 'customscript_bc_psv_pdf_sl';
-  const SUITELET_DEPLOY   = 'customdeploy_bc_psv_pdf_sl';
+  const SUITELET_SCRIPT   = 'customscript_bc_sl_psv_pdf_helper';
+  const SUITELET_DEPLOY   = 'customdeploy_bc_sl_psv_pdf_helper';
 
   /* ------------------------------------------------------------------ */
   /*  beforeLoad – Add Preview & Regenerate buttons (VIEW mode only)     */
