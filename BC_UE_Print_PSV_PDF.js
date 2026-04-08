@@ -150,7 +150,8 @@ define([
           values: {
             custevent_bc_psv_pdf_generated: true,
             custevent_bc_psv_folder_id: subFolderId,
-            custevent_bc_psv_pdf: fileId
+            custevent_bc_psv_pdf: fileId,
+            custevent_psv_error_log: ''
           }
         });
 
