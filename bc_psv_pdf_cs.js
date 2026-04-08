@@ -59,9 +59,7 @@ define(['N/https'], (https) => {
     };
 
     const pageInit = () => {
-        window.bcPsvPreview    = bcPsvPreview;
-        window.bcPsvRegenerate = bcPsvRegenerate;
     };
 
-    return { pageInit };
+    return { pageInit, bcPsvPreview, bcPsvRegenerate };
 });
