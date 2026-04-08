@@ -140,7 +140,8 @@ define([
           id: taskId,
           values: {
             custevent_bc_psv_pdf_generated: true,
-            custevent_bc_psv_folder_id: subFolderId
+            custevent_bc_psv_folder_id: subFolderId,
+            custevent_bc_psv_pdf: fileId
           }
         });
 
