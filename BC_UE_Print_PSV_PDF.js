@@ -172,7 +172,7 @@ define([
       const results = search.create({
         type: PSV_RECORD_TYPE,
         filters: [
-          ['custrecord_bc_psv_linked_task', 'anyof', taskId]
+          ['custrecord_bc_psv_task', 'anyof', taskId]
         ],
         columns: ['internalid']
       }).run().getRange({ start: 0, end: 1 });
