@@ -90,6 +90,15 @@ define([
         // 3. Search for linked PSV Test record
         const psvId = findPsvTestByTask(taskId);
         if (!psvId) {
+
+          record.submitFields({
+          type: record.Type.TASK,
+          id: taskId,
+          values: {
+            custevent_psv_error_log: `No PSV Test record linked to Task ${taskId}.`
+          }
+        });
+          
           log.warn('PSV PDF', `No PSV Test record linked to Task ${taskId}. Exiting.`);
           return;
         }
@@ -159,6 +168,13 @@ define([
               values: { custrecord_bc_psv_pdf_error: `${new Date().toISOString()} — ${e.message}` }
             });
           }
+          record.submitFields({
+            type: record.Type.TASK,
+            id: taskId,
+            values: {
+              custevent_psv_error_log: `${new Date().toISOString()} — ${e.message}`
+            }
+          });
         } catch (inner) {
           log.error('PSV PDF Error', `Could not log error to PSV Test: ${inner.message}`);
         }
