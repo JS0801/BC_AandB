@@ -9,8 +9,9 @@ define([
   'N/search',
   'N/file',
   'N/log',
-  'N/format'
-], (record, render, search, file, log, format) => {
+  'N/format',
+  'N/url'
+], (record, render, search, file, log, format, url) => {
 
   /* ------------------------------------------------------------------ */
   /*  CONSTANTS – update these after confirming IDs in your account      */
@@ -19,7 +20,47 @@ define([
   const TEMPLATE_ID       = 'CUSTTMPL_118_11915859_SB1_110'; // Advanced PDF template script ID
   const ROOT_FOLDER_NAME  = 'PSV Reports';
   const TASK_STATUS_CLOSED = 'COMPLETE'; // NetSuite internal value for Task "Completed/Closed"
-  
+  const SUITELET_SCRIPT   = 'customscript_bc_psv_pdf_sl';
+  const SUITELET_DEPLOY   = 'customdeploy_bc_psv_pdf_sl';
+
+  /* ------------------------------------------------------------------ */
+  /*  beforeLoad – Add Preview & Regenerate buttons (VIEW mode only)     */
+  /* ------------------------------------------------------------------ */
+  const beforeLoad = (context) => {
+    if (context.type !== context.UserEventType.VIEW) return;
+
+    const taskRec = context.newRecord;
+    const taskId  = taskRec.id;
+    const fileId  = taskRec.getValue({ fieldId: 'custevent_bc_psv_pdf' });
+
+    const suiteletUrl = url.resolveScript({
+      scriptId: SUITELET_SCRIPT,
+      deploymentId: SUITELET_DEPLOY,
+      params: { taskId: taskId }
+    });
+
+    // Preview – only if PDF exists
+    if (fileId) {
+      const previewUrl = suiteletUrl + '&action=preview';
+      context.form.addButton({
+        id: 'custpage_btn_preview_pdf',
+        label: 'Preview PSV PDF',
+        functionName: "bcPsvPreview('" + previewUrl + "')"
+      });
+    }
+
+    // Regenerate – always available
+    const regenUrl = suiteletUrl + '&action=regenerate';
+    context.form.addButton({
+      id: 'custpage_btn_regen_pdf',
+      label: 'Regenerate PSV PDF',
+      functionName: "bcPsvRegenerate('" + regenUrl + "')"
+    });
+
+    // Attach client script for loader + button handlers
+    context.form.clientScriptModulePath = './bc_psv_pdf_cs.js';
+  };
+
   /* ------------------------------------------------------------------ */
   /*  afterSubmit                                                        */
   /* ------------------------------------------------------------------ */
@@ -204,5 +245,5 @@ define([
 
     const truncate = (str, maxLen) => str.length > maxLen ? str.substring(0, maxLen) : str;
 
-    return { afterSubmit };
+    return { beforeLoad, afterSubmit };
   });
