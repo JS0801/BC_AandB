@@ -60,11 +60,11 @@ define([
         const pdfFile = renderPsvPdf(psvRec);
 
         // 6. Build file name: PSV_Report_[WO#]_[MMDDYYYY].pdf
-        var woText = psvRec.getText({ fieldId: 'custrecord_bc_psv_work_order' }) || 'NOWO';
+        var woNum = psvRec.getText({ fieldId: 'custrecord_bc_psv_work_order' }) || 'NOWO';
 
-        if (woText && woText.indexOf('#') !== -1) {
-           var parts = woText.split('#');
-           woText = parts[1] ? parts[1].trim() : woText;
+        if (woNum && woNum.indexOf('#') !== -1) {
+           var parts = woNum.split('#');
+           woNum = parts[1] ? parts[1].trim() : woNum;
         }
         const dateStr  = formatDateMMDDYYYY(new Date());
         const fileName = `PSV_Report_${sanitize(woNum)}_${dateStr}.pdf`;
