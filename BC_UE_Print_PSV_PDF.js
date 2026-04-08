@@ -84,7 +84,7 @@ define([
         record.submitFields({
           type: PSV_RECORD_TYPE,
           id: psvId,
-          values: { custrecord_bc_psv_pdf_file_id: fileId }
+          values: { custrecord_bc_psv_pdf_file_id: fileId, custrecord_bc_psv_pdf_error: '' }
         });
 
         // 10. Attach PDF file to the Task record
