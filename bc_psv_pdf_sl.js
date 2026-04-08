@@ -40,6 +40,28 @@ define([
             }
         } catch (e) {
             log.error('PSV Suitelet', 'Task ' + taskId + ': ' + e.message);
+
+            // Write error to both PSV Test and Task records
+            try {
+                const psvId = findPsvTestByTask(taskId);
+                if (psvId) {
+                    record.submitFields({
+                        type: PSV_RECORD_TYPE,
+                        id: psvId,
+                        values: { custrecord_bc_psv_pdf_error: `${new Date().toISOString()} — ${e.message}` }
+                    });
+                }
+                record.submitFields({
+                    type: record.Type.TASK,
+                    id: taskId,
+                    values: {
+                        custevent_psv_error_log: `${new Date().toISOString()} — ${e.message}`
+                    }
+                });
+            } catch (inner) {
+                log.error('PSV Suitelet', 'Could not log error to PSV Test/Task: ' + inner.message);
+            }
+
             sendJson(context, false, e.message);
         }
     };
@@ -66,6 +88,16 @@ define([
         // Find linked PSV Test
         const psvId = findPsvTestByTask(taskId);
         if (!psvId) {
+            const errorMsg = `No PSV Test record linked to Task ${taskId}.`;
+
+            record.submitFields({
+                type: record.Type.TASK,
+                id: taskId,
+                values: {
+                    custevent_psv_error_log: errorMsg
+                }
+            });
+
             sendJson(context, false, 'No PSV Test record linked to this Task.');
             return;
         }
@@ -100,7 +132,7 @@ define([
         const fileId = pdfFile.save();
         log.audit('PSV Regen', 'Regenerated PDF fileId=' + fileId + ' for Task ' + taskId);
 
-        // Update PSV Test
+        // Update PSV Test – clear any previous error
         record.submitFields({
             type: PSV_RECORD_TYPE,
             id: psvId,
@@ -113,13 +145,15 @@ define([
             to:     { type: 'task', id: taskId }
         });
 
-        // Flag Task
+        // Flag Task – clear any previous error
         record.submitFields({
             type: record.Type.TASK,
             id: taskId,
             values: {
                 custevent_bc_psv_pdf_generated: true,
-                custevent_bc_psv_folder_id: subFolderId
+                custevent_bc_psv_folder_id: subFolderId,
+                custevent_bc_psv_pdf: fileId,
+                custevent_psv_error_log: ''
             }
         });
 
