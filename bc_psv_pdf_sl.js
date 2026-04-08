@@ -137,7 +137,7 @@ define([
     const findPsvTestByTask = (taskId) => {
         const results = search.create({
             type: PSV_RECORD_TYPE,
-            filters: [['custrecord_bc_psv_linked_task', 'anyof', taskId]],
+            filters: [['custrecord_bc_psv_task', 'anyof', taskId]],
             columns: ['internalid']
         }).run().getRange({ start: 0, end: 1 });
         return results.length ? results[0].id : null;
