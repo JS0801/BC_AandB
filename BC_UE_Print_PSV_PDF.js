@@ -14,7 +14,7 @@ define([
 ], (record, render, search, file, log, format, url) => {
 
   /* ------------------------------------------------------------------ */
-  /*  CONSTANTS – update these after confirming IDs in your account      */
+  /*  CONSTANTS – update these after confirming IDs in your account     */
   /* ------------------------------------------------------------------ */
   const PSV_RECORD_TYPE   = 'customrecord_bc_psv';   // PSV Test custom record type ID
   const TEMPLATE_ID       = 'CUSTTMPL_118_11915859_SB1_110'; // Advanced PDF template script ID
@@ -24,7 +24,7 @@ define([
   const SUITELET_DEPLOY   = 'customdeploy_bc_sl_psv_pdf_helper';
 
   /* ------------------------------------------------------------------ */
-  /*  beforeLoad – Add Preview & Regenerate buttons (VIEW mode only)     */
+  /*  beforeLoad – Add Preview & Regenerate buttons (VIEW mode only)    */
   /* ------------------------------------------------------------------ */
   const beforeLoad = (context) => {
     if (context.type !== context.UserEventType.VIEW) return;
@@ -62,7 +62,7 @@ define([
   };
 
   /* ------------------------------------------------------------------ */
-  /*  afterSubmit                                                        */
+  /*  afterSubmit                                                       */
   /* ------------------------------------------------------------------ */
   const afterSubmit = (context) => {
     if (context.type !== context.UserEventType.CREATE &&
@@ -166,7 +166,7 @@ define([
     };
 
     /* ------------------------------------------------------------------ */
-    /*  HELPER: Find PSV Test record linked to a Task                      */
+    /*  HELPER: Find PSV Test record linked to a Task                     */
     /* ------------------------------------------------------------------ */
     const findPsvTestByTask = (taskId) => {
       const results = search.create({
@@ -181,10 +181,10 @@ define([
     };
 
     /* ------------------------------------------------------------------ */
-    /*  HELPER: Render Advanced PDF using N/render                         */
-    /*                                                                     */
-    /*  Uses render.create() → TemplateRenderer for custom records.        */
-    /*  The Advanced PDF template must be assigned to the PSV Test record.  */
+    /*  HELPER: Render Advanced PDF using N/render                        */
+    /*                                                                    */
+    /*  Uses render.create() → TemplateRenderer for custom records.       */
+    /*  The Advanced PDF template must be assigned to the PSV Test record.*/
     /* ------------------------------------------------------------------ */
     const renderPsvPdf = (psvRec) => {
       const renderer = render.create();
@@ -204,7 +204,7 @@ define([
     };
 
     /* ------------------------------------------------------------------ */
-    /*  HELPER: Get or create a File Cabinet folder                        */
+    /*  HELPER: Get or create a File Cabinet folder                       */
     /* ------------------------------------------------------------------ */
     const getOrCreateFolder = (folderName, parentId) => {
       const filters = [['name', 'is', folderName]];
@@ -233,7 +233,7 @@ define([
     };
 
     /* ------------------------------------------------------------------ */
-    /*  UTILITY HELPERS                                                    */
+    /*  UTILITY HELPERS                                                   */
     /* ------------------------------------------------------------------ */
     const formatDateMMDDYYYY = (d) => {
       const mm = String(d.getMonth() + 1).padStart(2, '0');
