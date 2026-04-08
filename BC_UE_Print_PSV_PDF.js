@@ -99,7 +99,7 @@ define([
           }
         });
           
-          log.warn('PSV PDF', `No PSV Test record linked to Task ${taskId}. Exiting.`);
+          log.error('PSV PDF', `No PSV Test record linked to Task ${taskId}. Exiting.`);
           return;
         }
 
