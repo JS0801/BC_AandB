@@ -16,7 +16,7 @@ define([
   /*  CONSTANTS – update these after confirming IDs in your account      */
   /* ------------------------------------------------------------------ */
   const PSV_RECORD_TYPE   = 'customrecord_bc_psv';   // PSV Test custom record type ID
-  const TEMPLATE_ID       = 'customscript_bc_psv_report_tmpl'; // Advanced PDF template script ID
+  const TEMPLATE_ID       = 'CUSTTMPL_118_11915859_SB1_110'; // Advanced PDF template script ID
   const ROOT_FOLDER_NAME  = 'PSV Reports';
   const TASK_STATUS_CLOSED = 'COMPLETE'; // NetSuite internal value for Task "Completed/Closed"
   
