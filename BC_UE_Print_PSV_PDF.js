@@ -37,7 +37,7 @@ define([
       if (context.type === context.UserEventType.EDIT) {
         const oldRec = context.oldRecord;
         const oldStatus = oldRec.getValue({ fieldId: 'status' });
-        if (oldStatus === 'COMPLETE') return; // was already closed, skip
+        //if (oldStatus === 'COMPLETE') return; // was already closed, skip
       } else if (context.type !== context.UserEventType.CREATE) {
         return;
       }
