@@ -1,8 +1,8 @@
 /**
-* @NApiVersion 2.1
-* @NScriptType UserEventScript
-* @NModuleScope SameAccount
-*/
+ * @NApiVersion 2.1
+ * @NScriptType UserEventScript
+ * @NModuleScope SameAccount
+ */
 define([
   'N/record',
   'N/render',
@@ -13,19 +13,13 @@ define([
   'N/url'
 ], (record, render, search, file, log, format, url) => {
 
-  /* ------------------------------------------------------------------ */
-  /*  CONSTANTS – update these after confirming IDs in your account     */
-  /* ------------------------------------------------------------------ */
-  const PSV_RECORD_TYPE   = 'customrecord_bc_psv';   // PSV Test custom record type ID
-  const TEMPLATE_ID       = 'CUSTTMPL_118_11915859_SB1_110'; // Advanced PDF template script ID
-  const ROOT_FOLDER_NAME  = 'PSV Reports';
-  const TASK_STATUS_CLOSED = 'COMPLETE'; // NetSuite internal value for Task "Completed/Closed"
-  const SUITELET_SCRIPT   = 'customscript_bc_sl_psv_pdf_helper';
-  const SUITELET_DEPLOY   = 'customdeploy_bc_sl_psv_pdf_helper';
+  const PSV_RECORD_TYPE    = 'customrecord_bc_psv';
+  const TEMPLATE_ID        = 'CUSTTMPL_118_11915859_SB1_110';
+  const ROOT_FOLDER_NAME   = 'PSV Reports';
+  const TASK_STATUS_CLOSED = 'COMPLETE';
+  const SUITELET_SCRIPT    = 'customscript_bc_sl_psv_pdf_helper';
+  const SUITELET_DEPLOY    = 'customdeploy_bc_sl_psv_pdf_helper';
 
-  /* ------------------------------------------------------------------ */
-  /*  beforeLoad – Add Preview & Regenerate buttons (VIEW mode only)    */
-  /* ------------------------------------------------------------------ */
   const beforeLoad = (context) => {
     if (context.type !== context.UserEventType.VIEW) return;
 
@@ -39,7 +33,6 @@ define([
       params: { taskId: taskId }
     });
 
-    // Preview – only if PDF exists
     if (fileId) {
       const previewUrl = suiteletUrl + '&action=preview';
       context.form.addButton({
@@ -49,7 +42,6 @@ define([
       });
     }
 
-    // Regenerate – always available
     const regenUrl = suiteletUrl + '&action=regenerate';
     context.form.addButton({
       id: 'custpage_btn_regen_pdf',
@@ -57,211 +49,221 @@ define([
       functionName: "bcPsvRegenerate('" + regenUrl + "')"
     });
 
-    // Attach client script for loader + button handlers
     context.form.clientScriptModulePath = './bc_psv_pdf_cs.js';
   };
 
-  /* ------------------------------------------------------------------ */
-  /*  afterSubmit                                                       */
-  /* ------------------------------------------------------------------ */
   const afterSubmit = (context) => {
-    if (context.type !== context.UserEventType.CREATE &&
-      context.type !== context.UserEventType.EDIT) {
+    if (
+      context.type !== context.UserEventType.CREATE &&
+      context.type !== context.UserEventType.EDIT
+    ) {
+      return;
+    }
+
+    const taskRec = context.newRecord;
+    const newStatus = taskRec.getValue({ fieldId: 'status' });
+
+    if (newStatus !== 'COMPLETE') return;
+
+    const taskId    = taskRec.id;
+    const taskTitle = taskRec.getValue({ fieldId: 'title' }) || 'Untitled';
+
+    try {
+      const psvIds = findPsvTestsByTask(taskId);
+
+      if (!psvIds || !psvIds.length) {
+        record.submitFields({
+          type: record.Type.TASK,
+          id: taskId,
+          values: {
+            custevent_psv_error_log: 'No PSV Test records linked to Task ' + taskId + '.'
+          }
+        });
+
+        log.error('PSV PDF', 'No PSV Test records linked to Task ' + taskId);
         return;
       }
 
-      const taskRec = context.newRecord;
-      const newStatus = taskRec.getValue({ fieldId: 'status' });
+      const rootFolderId = getOrCreateFolder(ROOT_FOLDER_NAME, null);
+      const subFolderName = truncate('Task-' + taskId + ' - ' + taskTitle, 100);
+      const subFolderId = getOrCreateFolder(subFolderName, rootFolderId);
 
-      if (newStatus !== 'COMPLETE') return;
+      let firstFileId = '';
+      let successCount = 0;
+      let errorMessages = [];
 
-      if (context.type === context.UserEventType.EDIT) {
-        const oldRec = context.oldRecord;
-        const oldStatus = oldRec.getValue({ fieldId: 'status' });
-        //if (oldStatus === 'COMPLETE') return; // was already closed, skip
-      } else if (context.type !== context.UserEventType.CREATE) {
-        return;
-      }
+      for (let i = 0; i < psvIds.length; i++) {
+        const psvId = psvIds[i];
 
-      const taskId    = taskRec.id;
-      const taskTitle = taskRec.getValue({ fieldId: 'title' }) || 'Untitled';
+        try {
+          const psvRec = record.load({
+            type: PSV_RECORD_TYPE,
+            id: psvId
+          });
 
-      try {
-        // 3. Search for linked PSV Test record
-        const psvId = findPsvTestByTask(taskId);
-        if (!psvId) {
+          const pdfFile = renderPsvPdf(psvRec);
+
+          var woNum = psvRec.getText({ fieldId: 'custrecord_bc_psv_work_order' }) || 'NOWO';
+
+          if (woNum && woNum.indexOf('#') !== -1) {
+            var parts = woNum.split('#');
+            woNum = parts[1] ? parts[1].trim() : woNum;
+          }
+
+          const dateStr = formatDateMMDDYYYY(new Date());
+          const fileName = 'PSV_Report_' + sanitize(woNum) + '_' + psvId + '_' + dateStr + '.pdf';
+
+          pdfFile.name = fileName;
+          pdfFile.folder = subFolderId;
+
+          const fileId = pdfFile.save();
+
+          if (!firstFileId) {
+            firstFileId = fileId;
+          }
 
           record.submitFields({
-          type: record.Type.TASK,
-          id: taskId,
-          values: {
-            custevent_psv_error_log: `No PSV Test record linked to Task ${taskId}.`
-          }
-        });
-          
-          log.error('PSV PDF', `No PSV Test record linked to Task ${taskId}. Exiting.`);
-          return;
-        }
+            type: PSV_RECORD_TYPE,
+            id: psvId,
+            values: {
+              custrecord_bc_psv_pdf_file_id: fileId,
+              custrecord_bc_psv_pdf_error: ''
+            }
+          });
 
-        // 4. Load the PSV Test record
-        const psvRec = record.load({ type: PSV_RECORD_TYPE, id: psvId });
+          record.attach({
+            record: { type: 'file', id: fileId },
+            to: { type: 'task', id: taskId }
+          });
 
-        // 5. Render the Advanced PDF template against the PSV Test record
-        const pdfFile = renderPsvPdf(psvRec);
+          successCount++;
 
-        // 6. Build file name: PSV_Report_[WO#]_[MMDDYYYY].pdf
-        var woNum = psvRec.getText({ fieldId: 'custrecord_bc_psv_work_order' }) || 'NOWO';
+          log.audit('PSV PDF', 'Generated PDF for PSV ' + psvId + ', fileId=' + fileId);
 
-        if (woNum && woNum.indexOf('#') !== -1) {
-           var parts = woNum.split('#');
-           woNum = parts[1] ? parts[1].trim() : woNum;
-        }
-        const dateStr  = formatDateMMDDYYYY(new Date());
-        const fileName = `PSV_Report_${sanitize(woNum)}_${dateStr}.pdf`;
-        pdfFile.name = fileName;
+        } catch (psvErr) {
+          errorMessages.push('PSV ' + psvId + ': ' + psvErr.message);
 
-        // 7. Create / find File Cabinet folder
-        const rootFolderId = getOrCreateFolder(ROOT_FOLDER_NAME, null);
-        const subFolderName = truncate(`Task-${taskId} – ${taskTitle}`, 100);
-        const subFolderId = getOrCreateFolder(subFolderName, rootFolderId);
-        pdfFile.folder = subFolderId;
-
-        // 8. Save PDF to File Cabinet
-        const fileId = pdfFile.save();
-        log.audit('PSV PDF', `PDF saved: fileId=${fileId}, name=${fileName}`);
-
-        // 9. Write file ID back to PSV Test record
-        record.submitFields({
-          type: PSV_RECORD_TYPE,
-          id: psvId,
-          values: { custrecord_bc_psv_pdf_file_id: fileId, custrecord_bc_psv_pdf_error: '' }
-        });
-
-        // 10. Attach PDF file to the Task record
-        record.attach({
-          record: { type: 'file', id: fileId },
-          to:     { type: 'task', id: taskId }
-        });
-
-        // 11. Flag Task as generated & store folder ID
-        record.submitFields({
-          type: record.Type.TASK,
-          id: taskId,
-          values: {
-            custevent_bc_psv_pdf_generated: true,
-            custevent_bc_psv_folder_id: subFolderId,
-            custevent_bc_psv_pdf: fileId,
-            custevent_psv_error_log: ''
-          }
-        });
-
-        log.audit('PSV PDF', `Successfully generated PDF for Task ${taskId}, PSV Test ${psvId}`);
-
-      } catch (e) {
-        log.error('PSV PDF Error', `Task ${taskId}: ${e.message}\n${e.stack}`);
-        // Write error to PSV Test record if we found one
-        try {
-          const psvId = findPsvTestByTask(taskId);
-          if (psvId) {
+          try {
             record.submitFields({
               type: PSV_RECORD_TYPE,
               id: psvId,
-              values: { custrecord_bc_psv_pdf_error: `${new Date().toISOString()} — ${e.message}` }
+              values: {
+                custrecord_bc_psv_pdf_error: new Date().toISOString() + ' - ' + psvErr.message
+              }
             });
+          } catch (innerErr) {
+            log.error('PSV PDF Error', 'Could not update PSV error for ' + psvId + ': ' + innerErr.message);
           }
-          record.submitFields({
-            type: record.Type.TASK,
-            id: taskId,
-            values: {
-              custevent_psv_error_log: `${new Date().toISOString()} — ${e.message}`
-            }
-          });
-        } catch (inner) {
-          log.error('PSV PDF Error', `Could not log error to PSV Test: ${inner.message}`);
+
+          log.error('PSV PDF Error', 'PSV ' + psvId + ': ' + psvErr.message);
         }
       }
-    };
 
-    /* ------------------------------------------------------------------ */
-    /*  HELPER: Find PSV Test record linked to a Task                     */
-    /* ------------------------------------------------------------------ */
-    const findPsvTestByTask = (taskId) => {
-      const results = search.create({
-        type: PSV_RECORD_TYPE,
-        filters: [
-          ['custrecord_bc_psv_task', 'anyof', taskId]
-        ],
-        columns: ['internalid']
-      }).run().getRange({ start: 0, end: 10 });
-
-      return results.length ? results[0].id : null;
-    };
-
-    /* ------------------------------------------------------------------ */
-    /*  HELPER: Render Advanced PDF using N/render                        */
-    /*                                                                    */
-    /*  Uses render.create() → TemplateRenderer for custom records.       */
-    /*  The Advanced PDF template must be assigned to the PSV Test record.*/
-    /* ------------------------------------------------------------------ */
-    const renderPsvPdf = (psvRec) => {
-      const renderer = render.create();
-
-      // Point to the Advanced PDF template by its script ID
-      renderer.setTemplateByScriptId({ scriptId: TEMPLATE_ID });
-
-      // Bind the PSV Test record so template can reference its fields
-      // In the template, fields are accessed as: record.custrecord_bc_psv_branch etc.
-      renderer.addRecord({
-        templateName: 'record',
-        record: psvRec
+      record.submitFields({
+        type: record.Type.TASK,
+        id: taskId,
+        values: {
+          custevent_bc_psv_pdf_generated: successCount > 0,
+          custevent_bc_psv_folder_id: subFolderId,
+          custevent_bc_psv_pdf: firstFileId || '',
+          custevent_psv_error_log: errorMessages.join('\n')
+        }
       });
 
-      // Render and return as PDF file object
-      return renderer.renderAsPdf();
-    };
+      log.audit(
+        'PSV PDF',
+        'Task ' + taskId + ': ' + successCount + ' PDF(s) generated out of ' + psvIds.length
+      );
 
-    /* ------------------------------------------------------------------ */
-    /*  HELPER: Get or create a File Cabinet folder                       */
-    /* ------------------------------------------------------------------ */
-    const getOrCreateFolder = (folderName, parentId) => {
-      const filters = [['name', 'is', folderName]];
-      if (parentId) {
-        filters.push('AND', ['parent', 'anyof', parentId]);
-      } else {
-        filters.push('AND', ['parent', 'anyof', '@NONE@']);
+    } catch (e) {
+      log.error('PSV PDF Error', 'Task ' + taskId + ': ' + e.message + '\n' + e.stack);
+
+      try {
+        record.submitFields({
+          type: record.Type.TASK,
+          id: taskId,
+          values: {
+            custevent_psv_error_log: new Date().toISOString() + ' - ' + e.message
+          }
+        });
+      } catch (inner) {
+        log.error('PSV PDF Error', 'Could not log task error: ' + inner.message);
       }
+    }
+  };
 
-      const results = search.create({
-        type: search.Type.FOLDER,
-        filters: filters,
-        columns: ['internalid']
-      }).run().getRange({ start: 0, end: 1 });
+  const findPsvTestsByTask = (taskId) => {
+    const results = search.create({
+      type: PSV_RECORD_TYPE,
+      filters: [
+        ['custrecord_bc_psv_task', 'anyof', taskId]
+      ],
+      columns: ['internalid']
+    }).run().getRange({ start: 0, end: 1000 });
 
-      if (results.length) {
-        return results[0].id;
-      }
+    const ids = [];
 
-      const folderRec = record.create({ type: record.Type.FOLDER });
-      folderRec.setValue({ fieldId: 'name', value: folderName });
-      if (parentId) {
-        folderRec.setValue({ fieldId: 'parent', value: parentId });
-      }
-      return folderRec.save();
-    };
+    for (let i = 0; i < results.length; i++) {
+      ids.push(results[i].id);
+    }
 
-    /* ------------------------------------------------------------------ */
-    /*  UTILITY HELPERS                                                   */
-    /* ------------------------------------------------------------------ */
-    const formatDateMMDDYYYY = (d) => {
-      const mm = String(d.getMonth() + 1).padStart(2, '0');
-      const dd = String(d.getDate()).padStart(2, '0');
-      const yyyy = d.getFullYear();
-      return `${mm}${dd}${yyyy}`;
-    };
+    return ids;
+  };
 
-    const sanitize = (str) => String(str).replace(/[^a-zA-Z0-9_-]/g, '_');
+  const renderPsvPdf = (psvRec) => {
+    const renderer = render.create();
 
-    const truncate = (str, maxLen) => str.length > maxLen ? str.substring(0, maxLen) : str;
+    renderer.setTemplateByScriptId({
+      scriptId: TEMPLATE_ID
+    });
 
-    return { beforeLoad, afterSubmit };
-  });
+    renderer.addRecord({
+      templateName: 'record',
+      record: psvRec
+    });
+
+    return renderer.renderAsPdf();
+  };
+
+  const getOrCreateFolder = (folderName, parentId) => {
+    const filters = [['name', 'is', folderName]];
+
+    if (parentId) {
+      filters.push('AND', ['parent', 'anyof', parentId]);
+    } else {
+      filters.push('AND', ['parent', 'anyof', '@NONE@']);
+    }
+
+    const results = search.create({
+      type: search.Type.FOLDER,
+      filters: filters,
+      columns: ['internalid']
+    }).run().getRange({ start: 0, end: 1 });
+
+    if (results.length) {
+      return results[0].id;
+    }
+
+    const folderRec = record.create({ type: record.Type.FOLDER });
+    folderRec.setValue({ fieldId: 'name', value: folderName });
+
+    if (parentId) {
+      folderRec.setValue({ fieldId: 'parent', value: parentId });
+    }
+
+    return folderRec.save();
+  };
+
+  const formatDateMMDDYYYY = (d) => {
+    const mm = String(d.getMonth() + 1).padStart(2, '0');
+    const dd = String(d.getDate()).padStart(2, '0');
+    const yyyy = d.getFullYear();
+    return mm + dd + yyyy;
+  };
+
+  const sanitize = (str) => String(str).replace(/[^a-zA-Z0-9_-]/g, '_');
+
+  const truncate = (str, maxLen) => str.length > maxLen ? str.substring(0, maxLen) : str;
+
+  return { beforeLoad, afterSubmit };
+});
