@@ -10,22 +10,22 @@ define([
   'N/file',
   'N/log',
   'N/format',
-  'N/url'
-], (record, render, search, file, log, format, url) => {
+  'N/url',
+  'N/xml'
+], (record, render, search, file, log, format, url, xml) => {
 
-  const PSV_RECORD_TYPE    = 'customrecord_bc_psv';
-  const TEMPLATE_ID        = 'CUSTTMPL_118_11915859_SB1_110';
-  const ROOT_FOLDER_NAME   = 'PSV Reports';
-  const TASK_STATUS_CLOSED = 'COMPLETE';
-  const SUITELET_SCRIPT    = 'customscript_bc_sl_psv_pdf_helper';
-  const SUITELET_DEPLOY    = 'customdeploy_bc_sl_psv_pdf_helper';
+  const PSV_RECORD_TYPE  = 'customrecord_bc_psv';
+  const TEMPLATE_ID      = 'CUSTTMPL_118_11915859_SB1_110';
+  const ROOT_FOLDER_NAME = 'PSV Reports';
+  const SUITELET_SCRIPT  = 'customscript_bc_sl_psv_pdf_helper';
+  const SUITELET_DEPLOY  = 'customdeploy_bc_sl_psv_pdf_helper';
 
   const beforeLoad = (context) => {
     if (context.type !== context.UserEventType.VIEW) return;
 
     const taskRec = context.newRecord;
-    const taskId  = taskRec.id;
-    const fileId  = taskRec.getValue({ fieldId: 'custevent_bc_psv_pdf' });
+    const taskId = taskRec.id;
+    const fileId = taskRec.getValue({ fieldId: 'custevent_bc_psv_pdf' });
 
     const suiteletUrl = url.resolveScript({
       scriptId: SUITELET_SCRIPT,
@@ -63,9 +63,9 @@ define([
     const taskRec = context.newRecord;
     const newStatus = taskRec.getValue({ fieldId: 'status' });
 
-    if (newStatus !== 'COMPLETE') return;
+   // if (newStatus !== 'COMPLETE') return;
 
-    const taskId    = taskRec.id;
+    const taskId = taskRec.id;
     const taskTitle = taskRec.getValue({ fieldId: 'title' }) || 'Untitled';
 
     try {
@@ -88,39 +88,39 @@ define([
       const subFolderName = truncate('Task-' + taskId + ' - ' + taskTitle, 100);
       const subFolderId = getOrCreateFolder(subFolderName, rootFolderId);
 
-      let firstFileId = '';
-      let successCount = 0;
-      let errorMessages = [];
+      var createdIndividualFileIds = [];
+      var errorMessages = [];
+      var successCount = 0;
 
-      for (let i = 0; i < psvIds.length; i++) {
-        const psvId = psvIds[i];
+      for (var i = 0; i < psvIds.length; i++) {
+        var psvId = psvIds[i];
 
         try {
-          const psvRec = record.load({
+          var psvRec = record.load({
             type: PSV_RECORD_TYPE,
             id: psvId
           });
 
-          const pdfFile = renderPsvPdf(psvRec);
+          var pdfFile = renderPsvPdf(psvRec);
 
-          var woNum = psvRec.getText({ fieldId: 'custrecord_bc_psv_work_order' }) || 'NOWO';
+          var woNum = psvRec.getText({
+            fieldId: 'custrecord_bc_psv_work_order'
+          }) || 'NOWO';
 
           if (woNum && woNum.indexOf('#') !== -1) {
             var parts = woNum.split('#');
             woNum = parts[1] ? parts[1].trim() : woNum;
           }
 
-          const dateStr = formatDateMMDDYYYY(new Date());
-          const fileName = 'PSV_Report_' + sanitize(woNum) + '_' + psvId + '_' + dateStr + '.pdf';
+          var dateStr = formatDateMMDDYYYY(new Date());
+          var fileName = 'PSV_Report_' + sanitize(woNum) + '_' + psvId + '_' + dateStr + '.pdf';
 
           pdfFile.name = fileName;
           pdfFile.folder = subFolderId;
 
-          const fileId = pdfFile.save();
-
-          if (!firstFileId) {
-            firstFileId = fileId;
-          }
+          var fileId = pdfFile.save();
+          createdIndividualFileIds.push(fileId);
+          successCount++;
 
           record.submitFields({
             type: PSV_RECORD_TYPE,
@@ -136,12 +136,12 @@ define([
             to: { type: 'task', id: taskId }
           });
 
-          successCount++;
-
-          log.audit('PSV PDF', 'Generated PDF for PSV ' + psvId + ', fileId=' + fileId);
+          log.audit('PSV PDF', 'Generated individual PDF for PSV ' + psvId + ', fileId=' + fileId);
 
         } catch (psvErr) {
           errorMessages.push('PSV ' + psvId + ': ' + psvErr.message);
+
+          log.error('PSV PDF Error', 'PSV ' + psvId + ': ' + psvErr.message);
 
           try {
             record.submitFields({
@@ -154,9 +154,19 @@ define([
           } catch (innerErr) {
             log.error('PSV PDF Error', 'Could not update PSV error for ' + psvId + ': ' + innerErr.message);
           }
-
-          log.error('PSV PDF Error', 'PSV ' + psvId + ': ' + psvErr.message);
         }
+      }
+
+      var mergedFileId = '';
+      if (createdIndividualFileIds.length > 0) {
+        mergedFileId = createMergedPsvPdf(createdIndividualFileIds, taskId, subFolderId);
+      }
+
+      if (mergedFileId) {
+        record.attach({
+          record: { type: 'file', id: mergedFileId },
+          to: { type: 'task', id: taskId }
+        });
       }
 
       record.submitFields({
@@ -165,14 +175,14 @@ define([
         values: {
           custevent_bc_psv_pdf_generated: successCount > 0,
           custevent_bc_psv_folder_id: subFolderId,
-          custevent_bc_psv_pdf: firstFileId || '',
+          custevent_bc_psv_pdf: mergedFileId || '',
           custevent_psv_error_log: errorMessages.join('\n')
         }
       });
 
       log.audit(
         'PSV PDF',
-        'Task ' + taskId + ': ' + successCount + ' PDF(s) generated out of ' + psvIds.length
+        'Task ' + taskId + ': ' + successCount + ' individual PDF(s) generated. Merged fileId=' + mergedFileId
       );
 
     } catch (e) {
@@ -201,9 +211,9 @@ define([
       columns: ['internalid']
     }).run().getRange({ start: 0, end: 1000 });
 
-    const ids = [];
+    var ids = [];
 
-    for (let i = 0; i < results.length; i++) {
+    for (var i = 0; i < results.length; i++) {
       ids.push(results[i].id);
     }
 
@@ -225,6 +235,39 @@ define([
     return renderer.renderAsPdf();
   };
 
+  const createMergedPsvPdf = (fileIds, taskId, folderId) => {
+    var xmlContent = '<?xml version="1.0"?>\n';
+    xmlContent += '<!DOCTYPE pdf PUBLIC "-//big.faceless.org//report" "report-1.1.dtd">\n';
+    xmlContent += '<pdfset>';
+
+    for (var i = 0; i < fileIds.length; i++) {
+      var loadedPdf = file.load({ id: fileIds[i] });
+      var pdfUrl = xml.escape({ xmlText: loadedPdf.url });
+      xmlContent += "<pdf src='" + pdfUrl + "'/>";
+    }
+
+    xmlContent += '</pdfset>';
+
+    var mergedPdfObj = render.xmlToPdf({
+      xmlString: xmlContent
+    });
+
+    var mergedPdfFile = file.create({
+      name: 'PSV_Merged_Task_' + taskId + '.pdf',
+      fileType: file.Type.PDF,
+      contents: mergedPdfObj.getContents(),
+      folder: folderId
+    });
+
+    mergedPdfFile.isOnline = true;
+
+    var mergedFileId = mergedPdfFile.save();
+
+    log.audit('PSV PDF', 'Merged PDF created, fileId=' + mergedFileId);
+
+    return mergedFileId;
+  };
+
   const getOrCreateFolder = (folderName, parentId) => {
     const filters = [['name', 'is', folderName]];
 
@@ -244,11 +287,20 @@ define([
       return results[0].id;
     }
 
-    const folderRec = record.create({ type: record.Type.FOLDER });
-    folderRec.setValue({ fieldId: 'name', value: folderName });
+    const folderRec = record.create({
+      type: record.Type.FOLDER
+    });
+
+    folderRec.setValue({
+      fieldId: 'name',
+      value: folderName
+    });
 
     if (parentId) {
-      folderRec.setValue({ fieldId: 'parent', value: parentId });
+      folderRec.setValue({
+        fieldId: 'parent',
+        value: parentId
+      });
     }
 
     return folderRec.save();
@@ -261,9 +313,16 @@ define([
     return mm + dd + yyyy;
   };
 
-  const sanitize = (str) => String(str).replace(/[^a-zA-Z0-9_-]/g, '_');
+  const sanitize = (str) => {
+    return String(str).replace(/[^a-zA-Z0-9_-]/g, '_');
+  };
 
-  const truncate = (str, maxLen) => str.length > maxLen ? str.substring(0, maxLen) : str;
+  const truncate = (str, maxLen) => {
+    return str.length > maxLen ? str.substring(0, maxLen) : str;
+  };
 
-  return { beforeLoad, afterSubmit };
+  return {
+    beforeLoad,
+    afterSubmit
+  };
 });
