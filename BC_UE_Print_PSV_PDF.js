@@ -236,37 +236,31 @@ define([
   };
 
   const createMergedPsvPdf = (fileIds, taskId, folderId) => {
-    var xmlContent = '<?xml version="1.0"?>\n';
-    xmlContent += '<!DOCTYPE pdf PUBLIC "-//big.faceless.org//report" "report-1.1.dtd">\n';
-    xmlContent += '<pdfset>';
+  var domain = url.resolveDomain({ hostType: url.HostType.APPLICATION });
 
-    for (var i = 0; i < fileIds.length; i++) {
-      var loadedPdf = file.load({ id: fileIds[i] });
-      var pdfUrl = xml.escape({ xmlText: loadedPdf.url });
-      xmlContent += "<pdf src='" + pdfUrl + "'/>";
-    }
+  var xmlContent = '<?xml version="1.0"?>\n';
+  xmlContent += '<!DOCTYPE pdf PUBLIC "-//big.faceless.org//report" "report-1.1.dtd">\n';
+  xmlContent += '<pdfset>';
 
-    xmlContent += '</pdfset>';
+  for (var i = 0; i < fileIds.length; i++) {
+    var loadedPdf = file.load({ id: fileIds[i] });
+    var absoluteUrl = 'https://' + domain + loadedPdf.url;
+    var escapedUrl = xml.escape({ xmlText: absoluteUrl });
+    xmlContent += '<pdf src="' + escapedUrl + '"/>';
+  }
 
-    var mergedPdfObj = render.xmlToPdf({
-      xmlString: xmlContent
-    });
+  xmlContent += '</pdfset>';
 
-    var mergedPdfFile = file.create({
-      name: 'PSV_Merged_Task_' + taskId + '.pdf',
-      fileType: file.Type.PDF,
-      contents: mergedPdfObj,
-      folder: folderId
-    });
+  var mergedPdfObj = render.xmlToPdf({ xmlString: xmlContent });
+  mergedPdfObj.name     = 'PSV_Merged_Task_' + taskId + '.pdf';
+  mergedPdfObj.folder   = folderId;
+  mergedPdfObj.isOnline = true;
 
-    mergedPdfFile.isOnline = true;
+  var mergedFileId = mergedPdfObj.save();
 
-    var mergedFileId = mergedPdfFile.save();
-
-    log.audit('PSV PDF', 'Merged PDF created, fileId=' + mergedFileId);
-
-    return mergedFileId;
-  };
+  log.audit('PSV PDF', 'Merged PDF created, fileId=' + mergedFileId);
+  return mergedFileId;
+};
 
   const getOrCreateFolder = (folderName, parentId) => {
     const filters = [['name', 'is', folderName]];
