@@ -286,7 +286,7 @@ define([
     var ids = [];
 
     var results = search.create({
-      type: search.Type.FILE,
+      type: 'file',
       filters: [
         ['attachedto', 'anyof', taskId],
         'AND',
