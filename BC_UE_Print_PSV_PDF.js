@@ -245,9 +245,7 @@ define([
       var pdfUrl = xml.escape({ xmlText: loadedPdf.url });
       log.debug('pdfUrl', pdfUrl)
       xmlContent += "<pdf src='" + pdfUrl + "'/>";
-    }
-
-    xmlContent += '</pdfset>';
+    }xmlContent += '</pdfset>';
 
     var mergedPdfObj = render.xmlToPdf({
       xmlString: xmlContent
