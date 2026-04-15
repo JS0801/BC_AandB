@@ -88,6 +88,9 @@ define([
       const subFolderName = truncate('Task-' + taskId + ' - ' + taskTitle, 100);
       const subFolderId = getOrCreateFolder(subFolderName, rootFolderId);
 
+      // Remove old file attachments first
+      removeOldTaskAttachments(taskId);
+
       var createdIndividualFileIds = [];
       var errorMessages = [];
       var successCount = 0;
@@ -117,7 +120,6 @@ define([
 
           pdfFile.name = fileName;
           pdfFile.folder = subFolderId;
-          pdfFile.isOnline = true;
 
           var fileId = pdfFile.save();
           createdIndividualFileIds.push(fileId);
@@ -213,11 +215,9 @@ define([
     }).run().getRange({ start: 0, end: 1000 });
 
     var ids = [];
-
     for (var i = 0; i < results.length; i++) {
       ids.push(results[i].id);
     }
-
     return ids;
   };
 
@@ -237,15 +237,16 @@ define([
   };
 
   const createMergedPsvPdf = (fileIds, taskId, folderId) => {
-    var xmlContent = "<?xml version=\"1.0\"?>\n<!DOCTYPE pdf PUBLIC \"-//big.faceless.org//report\" \"report-1.1.dtd\">\n";
+    var xmlContent = '<?xml version="1.0"?>\n';
+    xmlContent += '<!DOCTYPE pdf PUBLIC "-//big.faceless.org//report" "report-1.1.dtd">\n';
     xmlContent += '<pdfset>';
 
     for (var i = 0; i < fileIds.length; i++) {
       var loadedPdf = file.load({ id: fileIds[i] });
       var pdfUrl = xml.escape({ xmlText: loadedPdf.url });
-      log.debug('pdfUrl', pdfUrl)
       xmlContent += "<pdf src='" + pdfUrl + "'/>";
     }
+
     xmlContent += '</pdfset>';
 
     var mergedPdfObj = render.xmlToPdf({
@@ -266,6 +267,57 @@ define([
     log.audit('PSV PDF', 'Merged PDF created, fileId=' + mergedFileId);
 
     return mergedFileId;
+  };
+
+  const removeOldTaskAttachments = (taskId) => {
+    try {
+      var oldFileIds = [];
+
+      var taskFileSearch = search.create({
+        type: 'task',
+        filters: [
+          ['internalid', 'anyof', taskId],
+          'AND',
+          ['file.internalid', 'noneof', '@NONE@']
+        ],
+        columns: [
+          search.createColumn({ name: 'internalid', join: 'file' })
+        ]
+      }).run().getRange({ start: 0, end: 1000 });
+
+      for (var i = 0; i < taskFileSearch.length; i++) {
+        var oldFileId = taskFileSearch[i].getValue({
+          name: 'internalid',
+          join: 'file'
+        });
+
+        if (oldFileId) {
+          oldFileIds.push(oldFileId);
+        }
+      }
+
+      for (var j = 0; j < oldFileIds.length; j++) {
+        try {
+          record.detach({
+            record: {
+              type: 'file',
+              id: oldFileIds[j]
+            },
+            from: {
+              type: 'task',
+              id: taskId
+            }
+          });
+
+          log.audit('PSV PDF', 'Detached old file attachment: ' + oldFileIds[j] + ' from Task ' + taskId);
+        } catch (detachErr) {
+          log.error('PSV PDF Detach Error', 'File ' + oldFileIds[j] + ': ' + detachErr.message);
+        }
+      }
+
+    } catch (e) {
+      log.error('PSV PDF', 'Error removing old attachments from Task ' + taskId + ': ' + e.message);
+    }
   };
 
   const getOrCreateFolder = (folderName, parentId) => {
