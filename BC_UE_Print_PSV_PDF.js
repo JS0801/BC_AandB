@@ -65,6 +65,15 @@ define([
 
     if (newStatus !== 'COMPLETE') return;
 
+
+    if (context.type === context.UserEventType.EDIT) {
+        const oldRec = context.oldRecord;
+        const oldStatus = oldRec.getValue({ fieldId: 'status' });
+        if (oldStatus === 'COMPLETE') return;
+    } else if (context.type !== context.UserEventType.CREATE) {
+        return;
+    }
+
     const taskId = taskRec.id;
     const taskTitle = taskRec.getValue({ fieldId: 'title' }) || 'Untitled';
 
