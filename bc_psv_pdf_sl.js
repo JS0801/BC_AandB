@@ -13,8 +13,9 @@ define([
     'N/render',
     'N/search',
     'N/file',
-    'N/log'
-], (record, render, search, file, log) => {
+    'N/log',
+    'N/url'
+], (record, render, search, file, log, url) => {
 
     const PSV_RECORD_TYPE  = 'customrecord_bc_psv';
     const TEMPLATE_ID      = 'CUSTTMPL_118_11915859_SB1_110';
@@ -39,27 +40,32 @@ define([
                 sendJson(context, false, 'Invalid action: ' + action);
             }
         } catch (e) {
-            log.error('PSV Suitelet', 'Task ' + taskId + ': ' + e.message);
+            log.error('PSV Suitelet', 'Task ' + taskId + ': ' + e.message + '\n' + e.stack);
 
-            // Write error to both PSV Test and Task records
             try {
-                const psvId = findPsvTestByTask(taskId);
-                if (psvId) {
-                    record.submitFields({
-                        type: PSV_RECORD_TYPE,
-                        id: psvId,
-                        values: { custrecord_bc_psv_pdf_error: `${new Date().toISOString()} — ${e.message}` }
-                    });
+                const psvIds = findPsvTestsByTask(taskId);
+                for (var i = 0; i < psvIds.length; i++) {
+                    try {
+                        record.submitFields({
+                            type: PSV_RECORD_TYPE,
+                            id: psvIds[i],
+                            values: {
+                                custrecord_bc_psv_pdf_error: new Date().toISOString() + ' — ' + e.message
+                            }
+                        });
+                    } catch (inner) {
+                        log.error('PSV Suitelet', 'Could not log error to PSV ' + psvIds[i] + ': ' + inner.message);
+                    }
                 }
                 record.submitFields({
                     type: record.Type.TASK,
                     id: taskId,
                     values: {
-                        custevent_psv_error_log: `${new Date().toISOString()} — ${e.message}`
+                        custevent_psv_error_log: new Date().toISOString() + ' — ' + e.message
                     }
                 });
             } catch (inner) {
-                log.error('PSV Suitelet', 'Could not log error to PSV Test/Task: ' + inner.message);
+                log.error('PSV Suitelet', 'Could not log error to Task: ' + inner.message);
             }
 
             sendJson(context, false, e.message);
@@ -80,101 +86,218 @@ define([
         context.response.writeFile({ file: pdfFile, isInline: true });
     };
 
-    /* ---- REGENERATE (same logic as UE afterSubmit) ---- */
+    /* ---- REGENERATE ---- */
     const handleRegenerate = (context, taskId) => {
         const taskRec   = record.load({ type: record.Type.TASK, id: taskId });
         const taskTitle = taskRec.getValue({ fieldId: 'title' }) || 'Untitled';
 
-        // Find linked PSV Test
-        const psvId = findPsvTestByTask(taskId);
-        if (!psvId) {
-            const errorMsg = `No PSV Test record linked to Task ${taskId}.`;
-
+        const psvIds = findPsvTestsByTask(taskId);
+        if (!psvIds || !psvIds.length) {
+            const errorMsg = 'No PSV Test records linked to Task ' + taskId + '.';
             record.submitFields({
                 type: record.Type.TASK,
                 id: taskId,
-                values: {
-                    custevent_psv_error_log: errorMsg
-                }
+                values: { custevent_psv_error_log: errorMsg }
             });
-
-            sendJson(context, false, 'No PSV Test record linked to this Task.');
+            sendJson(context, false, errorMsg);
             return;
         }
 
-        const psvRec = record.load({ type: PSV_RECORD_TYPE, id: psvId });
-
-        // Render PDF
-        const renderer = render.create();
-        renderer.setTemplateByScriptId({ scriptId: TEMPLATE_ID });
-        renderer.addRecord({ templateName: 'record', record: psvRec });
-        const pdfFile = renderer.renderAsPdf();
-
-        // File name – same WO# parsing logic as UE
-        var woNum = psvRec.getText({ fieldId: 'custrecord_bc_psv_work_order' }) || 'NOWO';
-        if (woNum && woNum.indexOf('#') !== -1) {
-            var parts = woNum.split('#');
-            woNum = parts[1] ? parts[1].trim() : woNum;
-        }
-        const now     = new Date();
-        const dateStr = formatDateMMDDYYYY(now);
-        const timeStr = String(now.getHours()).padStart(2, '0') +
-                        String(now.getMinutes()).padStart(2, '0') +
-                        String(now.getSeconds()).padStart(2, '0');
-        pdfFile.name = 'PSV_Report_' + sanitize(woNum) + '_' + dateStr + '_' + timeStr + '.pdf';
-
-        // Folder
         const rootFolderId  = getOrCreateFolder(ROOT_FOLDER_NAME, null);
-        const subFolderName = truncate('Task-' + taskId + ' – ' + taskTitle, 100);
+        const subFolderName = truncate('Task-' + taskId + ' - ' + taskTitle, 100);
         const subFolderId   = getOrCreateFolder(subFolderName, rootFolderId);
-        pdfFile.folder      = subFolderId;
 
-        const fileId = pdfFile.save();
-        log.audit('PSV Regen', 'Regenerated PDF fileId=' + fileId + ' for Task ' + taskId);
+        // Detach old attachments before regenerating
+        removeOldTaskAttachments(taskId);
 
-        // Update PSV Test – clear any previous error
-        record.submitFields({
-            type: PSV_RECORD_TYPE,
-            id: psvId,
-            values: { custrecord_bc_psv_pdf_file_id: fileId, custrecord_bc_psv_pdf_error: '' }
-        });
+        var createdIndividualFileIds = [];
+        var errorMessages = [];
+        var successCount = 0;
 
-        // Attach to Task
-        record.attach({
-            record: { type: 'file', id: fileId },
-            to:     { type: 'task', id: taskId }
-        });
+        for (var i = 0; i < psvIds.length; i++) {
+            var psvId = psvIds[i];
 
-        // Flag Task – clear any previous error
+            try {
+                var psvRec = record.load({ type: PSV_RECORD_TYPE, id: psvId });
+
+                // Render individual PDF
+                var renderer = render.create();
+                renderer.setTemplateByScriptId({ scriptId: TEMPLATE_ID });
+                renderer.addRecord({ templateName: 'record', record: psvRec });
+                var pdfFile = renderer.renderAsPdf();
+
+                // Build file name – same WO# parsing as UE
+                var woNum = psvRec.getText({ fieldId: 'custrecord_bc_psv_work_order' }) || 'NOWO';
+                if (woNum && woNum.indexOf('#') !== -1) {
+                    var parts = woNum.split('#');
+                    woNum = parts[1] ? parts[1].trim() : woNum;
+                }
+                var now     = new Date();
+                var dateStr = formatDateMMDDYYYY(now);
+                var timeStr = String(now.getHours()).padStart(2, '0') +
+                              String(now.getMinutes()).padStart(2, '0') +
+                              String(now.getSeconds()).padStart(2, '0');
+
+                pdfFile.name     = 'PSV_Report_' + sanitize(woNum) + '_' + psvId + '_' + dateStr + '_' + timeStr + '.pdf';
+                pdfFile.folder   = subFolderId;
+                pdfFile.isOnline = true;
+
+                var fileId = pdfFile.save();
+                createdIndividualFileIds.push(fileId);
+                successCount++;
+
+                // Update PSV record – clear any previous error
+                record.submitFields({
+                    type: PSV_RECORD_TYPE,
+                    id: psvId,
+                    values: {
+                        custrecord_bc_psv_pdf_file_id: fileId,
+                        custrecord_bc_psv_pdf_error: ''
+                    }
+                });
+
+                // Attach individual PDF to Task
+                record.attach({
+                    record: { type: 'file', id: fileId },
+                    to:     { type: 'task', id: taskId }
+                });
+
+                log.audit('PSV Regen', 'Generated PDF for PSV ' + psvId + ', fileId=' + fileId);
+
+            } catch (psvErr) {
+                errorMessages.push('PSV ' + psvId + ': ' + psvErr.message);
+                log.error('PSV Regen Error', 'PSV ' + psvId + ': ' + psvErr.message);
+
+                try {
+                    record.submitFields({
+                        type: PSV_RECORD_TYPE,
+                        id: psvId,
+                        values: {
+                            custrecord_bc_psv_pdf_error: new Date().toISOString() + ' - ' + psvErr.message
+                        }
+                    });
+                } catch (innerErr) {
+                    log.error('PSV Regen Error', 'Could not update PSV error for ' + psvId + ': ' + innerErr.message);
+                }
+            }
+        }
+
+        // Merge all individual PDFs into one
+        var mergedFileId = '';
+        if (createdIndividualFileIds.length > 0) {
+            mergedFileId = createMergedPsvPdf(createdIndividualFileIds, taskId, subFolderId);
+        }
+
+        if (mergedFileId) {
+            record.attach({
+                record: { type: 'file', id: mergedFileId },
+                to:     { type: 'task', id: taskId }
+            });
+        }
+
+        // Update Task record
         record.submitFields({
             type: record.Type.TASK,
             id: taskId,
             values: {
-                custevent_bc_psv_pdf_generated: true,
+                custevent_bc_psv_pdf_generated: successCount > 0,
                 custevent_bc_psv_folder_id: subFolderId,
-                custevent_bc_psv_pdf: fileId,
-                custevent_psv_error_log: ''
+                custevent_bc_psv_pdf: mergedFileId || '',
+                custevent_psv_error_log: errorMessages.join('\n')
             }
         });
 
-        sendJson(context, true, 'PDF regenerated successfully.', fileId);
+        log.audit('PSV Regen', 'Task ' + taskId + ': ' + successCount + ' PDF(s) regenerated. Merged fileId=' + mergedFileId);
+
+        sendJson(context, true, 'PDF regenerated successfully.', mergedFileId || createdIndividualFileIds[0]);
     };
 
     /* ---- HELPERS ---- */
+
+    const createMergedPsvPdf = (fileIds, taskId, folderId) => {
+        var domain = url.resolveDomain({ hostType: url.HostType.APPLICATION });
+
+        var xmlContent = '<?xml version="1.0"?>\n';
+        xmlContent += '<!DOCTYPE pdf PUBLIC "-//big.faceless.org//report" "report-1.1.dtd">\n';
+        xmlContent += '<pdfset>';
+
+        for (var i = 0; i < fileIds.length; i++) {
+            var loadedPdf = file.load({ id: fileIds[i] });
+            var rawUrl = loadedPdf.url;
+            if (rawUrl.indexOf('http') !== 0) {
+                rawUrl = 'https://' + domain + rawUrl;
+            }
+            // Escape & to &amp; so the XML is valid for the BFO renderer
+            var escapedUrl = rawUrl.replace(/&/g, '&amp;');
+            xmlContent += '<pdf src="' + escapedUrl + '"/>';
+        }
+
+        xmlContent += '</pdfset>';
+
+        log.debug('PSV Merged XML', xmlContent);
+
+        var mergedPdfObj     = render.xmlToPdf({ xmlString: xmlContent });
+        mergedPdfObj.name    = 'PSV_Merged_Task_' + taskId + '.pdf';
+        mergedPdfObj.folder  = folderId;
+        mergedPdfObj.isOnline = true;
+
+        var mergedFileId = mergedPdfObj.save();
+        log.audit('PSV Regen', 'Merged PDF created, fileId=' + mergedFileId);
+        return mergedFileId;
+    };
+
+    const removeOldTaskAttachments = (taskId) => {
+        try {
+            var taskFileSearch = search.create({
+                type: 'task',
+                filters: [
+                    ['internalid', 'anyof', taskId],
+                    'AND',
+                    ['file.internalid', 'noneof', '@NONE@']
+                ],
+                columns: [
+                    search.createColumn({ name: 'internalid', join: 'file' })
+                ]
+            }).run().getRange({ start: 0, end: 1000 });
+
+            var oldFileIds = [];
+            for (var i = 0; i < taskFileSearch.length; i++) {
+                var oldFileId = taskFileSearch[i].getValue({ name: 'internalid', join: 'file' });
+                if (oldFileId) oldFileIds.push(oldFileId);
+            }
+
+            for (var j = 0; j < oldFileIds.length; j++) {
+                try {
+                    record.detach({
+                        record: { type: 'file', id: oldFileIds[j] },
+                        from:   { type: 'task', id: taskId }
+                    });
+                    log.audit('PSV Regen', 'Detached old file ' + oldFileIds[j] + ' from Task ' + taskId);
+                } catch (detachErr) {
+                    log.error('PSV Regen Detach Error', 'File ' + oldFileIds[j] + ': ' + detachErr.message);
+                }
+            }
+        } catch (e) {
+            log.error('PSV Regen', 'Error removing old attachments from Task ' + taskId + ': ' + e.message);
+        }
+    };
+
+    const findPsvTestsByTask = (taskId) => {
+        const results = search.create({
+            type: PSV_RECORD_TYPE,
+            filters: [['custrecord_bc_psv_task', 'anyof', taskId]],
+            columns: ['internalid']
+        }).run().getRange({ start: 0, end: 1000 });
+        var ids = [];
+        for (var i = 0; i < results.length; i++) ids.push(results[i].id);
+        return ids;
+    };
+
     const sendJson = (context, success, message, fileId) => {
         const payload = { success: success, message: message };
         if (fileId) payload.fileId = fileId;
         context.response.setHeader({ name: 'Content-Type', value: 'application/json' });
         context.response.write(JSON.stringify(payload));
-    };
-
-    const findPsvTestByTask = (taskId) => {
-        const results = search.create({
-            type: PSV_RECORD_TYPE,
-            filters: [['custrecord_bc_psv_task', 'anyof', taskId]],
-            columns: ['internalid']
-        }).run().getRange({ start: 0, end: 1 });
-        return results.length ? results[0].id : null;
     };
 
     const getOrCreateFolder = (folderName, parentId) => {
@@ -201,7 +324,7 @@ define([
     };
 
     const sanitize = (str) => String(str).replace(/[^a-zA-Z0-9_-]/g, '_');
-    const truncate = (str, maxLen) => str.length > maxLen ? str.substring(0, maxLen) : str;
+    const truncate  = (str, maxLen) => str.length > maxLen ? str.substring(0, maxLen) : str;
 
     return { onRequest };
 });
