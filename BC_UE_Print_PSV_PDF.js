@@ -246,7 +246,7 @@ define([
     var loadedPdf = file.load({ id: fileIds[i] });
     var absoluteUrl = 'https://' + domain + loadedPdf.url;
     var escapedUrl = xml.escape({ xmlText: absoluteUrl });
-    xmlContent += '<pdf src="' + escapedUrl.replace(/&/g, '&amp;'); + '"/>';
+    xmlContent += '<pdf src="' + escapedUrl.replace(/&/g, "&amp;") + '"/>';
   }
 
   xmlContent += '</pdfset>';
