@@ -192,7 +192,7 @@ define([
           ['custrecord_bc_psv_task', 'anyof', taskId]
         ],
         columns: ['internalid']
-      }).run().getRange({ start: 0, end: 1 });
+      }).run().getRange({ start: 0, end: 10 });
 
       return results.length ? results[0].id : null;
     };
