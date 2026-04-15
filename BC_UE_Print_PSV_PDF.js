@@ -60,7 +60,7 @@ define([
 
     const taskRec = context.newRecord;
     const status = taskRec.getValue({ fieldId: 'status' });
-    if (status !== 'COMPLETE') return;
+  //  if (status !== 'COMPLETE') return;
 
     const taskId = taskRec.id;
     const taskTitle = taskRec.getValue({ fieldId: 'title' }) || 'Untitled';
