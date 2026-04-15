@@ -9,14 +9,16 @@ define([
   'N/search',
   'N/file',
   'N/log',
+  'N/format',
   'N/url'
-], (record, render, search, file, log, url) => {
+], (record, render, search, file, log, format, url) => {
 
-  const PSV_RECORD_TYPE  = 'customrecord_bc_psv';
-  const TEMPLATE_ID      = 'CUSTTMPL_118_11915859_SB1_110';
-  const ROOT_FOLDER_NAME = 'PSV Reports';
-  const SUITELET_SCRIPT  = 'customscript_bc_sl_psv_pdf_helper';
-  const SUITELET_DEPLOY  = 'customdeploy_bc_sl_psv_pdf_helper';
+  const PSV_RECORD_TYPE    = 'customrecord_bc_psv';
+  const TEMPLATE_ID        = 'CUSTTMPL_118_11915859_SB1_110';
+  const ROOT_FOLDER_NAME   = 'PSV Reports';
+  const TASK_STATUS_CLOSED = 'COMPLETE';
+  const SUITELET_SCRIPT    = 'customscript_bc_sl_psv_pdf_helper';
+  const SUITELET_DEPLOY    = 'customdeploy_bc_sl_psv_pdf_helper';
 
   const beforeLoad = (context) => {
     if (context.type !== context.UserEventType.VIEW) return;
@@ -59,112 +61,122 @@ define([
     }
 
     const taskRec = context.newRecord;
-    const status = taskRec.getValue({ fieldId: 'status' });
-  //  if (status !== 'COMPLETE') return;
+    const newStatus = taskRec.getValue({ fieldId: 'status' });
 
-    const taskId = taskRec.id;
+    if (newStatus !== 'COMPLETE') return;
+
+    const taskId    = taskRec.id;
     const taskTitle = taskRec.getValue({ fieldId: 'title' }) || 'Untitled';
 
     try {
       const psvIds = findPsvTestsByTask(taskId);
 
-      if (!psvIds.length) {
+      if (!psvIds || !psvIds.length) {
         record.submitFields({
           type: record.Type.TASK,
           id: taskId,
           values: {
-            custevent_psv_error_log: 'No PSV records linked to Task ' + taskId
+            custevent_psv_error_log: 'No PSV Test records linked to Task ' + taskId + '.'
           }
         });
+
+        log.error('PSV PDF', 'No PSV Test records linked to Task ' + taskId);
         return;
       }
 
-      // 1. Clear current merged file field
+      const rootFolderId = getOrCreateFolder(ROOT_FOLDER_NAME, null);
+      const subFolderName = truncate('Task-' + taskId + ' - ' + taskTitle, 100);
+      const subFolderId = getOrCreateFolder(subFolderName, rootFolderId);
+
+      let firstFileId = '';
+      let successCount = 0;
+      let errorMessages = [];
+
+      for (let i = 0; i < psvIds.length; i++) {
+        const psvId = psvIds[i];
+
+        try {
+          const psvRec = record.load({
+            type: PSV_RECORD_TYPE,
+            id: psvId
+          });
+
+          const pdfFile = renderPsvPdf(psvRec);
+
+          var woNum = psvRec.getText({ fieldId: 'custrecord_bc_psv_work_order' }) || 'NOWO';
+
+          if (woNum && woNum.indexOf('#') !== -1) {
+            var parts = woNum.split('#');
+            woNum = parts[1] ? parts[1].trim() : woNum;
+          }
+
+          const dateStr = formatDateMMDDYYYY(new Date());
+          const fileName = 'PSV_Report_' + sanitize(woNum) + '_' + psvId + '_' + dateStr + '.pdf';
+
+          pdfFile.name = fileName;
+          pdfFile.folder = subFolderId;
+
+          const fileId = pdfFile.save();
+
+          if (!firstFileId) {
+            firstFileId = fileId;
+          }
+
+          record.submitFields({
+            type: PSV_RECORD_TYPE,
+            id: psvId,
+            values: {
+              custrecord_bc_psv_pdf_file_id: fileId,
+              custrecord_bc_psv_pdf_error: ''
+            }
+          });
+
+          record.attach({
+            record: { type: 'file', id: fileId },
+            to: { type: 'task', id: taskId }
+          });
+
+          successCount++;
+
+          log.audit('PSV PDF', 'Generated PDF for PSV ' + psvId + ', fileId=' + fileId);
+
+        } catch (psvErr) {
+          errorMessages.push('PSV ' + psvId + ': ' + psvErr.message);
+
+          try {
+            record.submitFields({
+              type: PSV_RECORD_TYPE,
+              id: psvId,
+              values: {
+                custrecord_bc_psv_pdf_error: new Date().toISOString() + ' - ' + psvErr.message
+              }
+            });
+          } catch (innerErr) {
+            log.error('PSV PDF Error', 'Could not update PSV error for ' + psvId + ': ' + innerErr.message);
+          }
+
+          log.error('PSV PDF Error', 'PSV ' + psvId + ': ' + psvErr.message);
+        }
+      }
+
       record.submitFields({
         type: record.Type.TASK,
         id: taskId,
         values: {
-          custevent_bc_psv_pdf: '',
-          custevent_psv_error_log: ''
-        }
-      });
-
-      // 2. Remove old attached PDF files
-      removeOldAttachedPdfFiles(taskId);
-
-      // 3. Render each PSV as XML
-      var xmlParts = [];
-      var fileNameSeed = 'NOWO';
-
-      for (var i = 0; i < psvIds.length; i++) {
-        var psvRec = record.load({
-          type: PSV_RECORD_TYPE,
-          id: psvIds[i]
-        });
-
-        if (i === 0) {
-          fileNameSeed = psvRec.getText({ fieldId: 'custrecord_bc_psv_work_order' }) || 'NOWO';
-          if (fileNameSeed.indexOf('#') !== -1) {
-            var parts = fileNameSeed.split('#');
-            fileNameSeed = parts[1] ? parts[1].trim() : fileNameSeed;
-          }
-        }
-
-        var xmlString = renderSinglePsvXml(psvRec);
-        xmlParts.push(stripOuterPdfTags(xmlString));
-      }
-
-      // 4. Merge XML using pdfset
-      var mergedXml = buildPdfSetXml(xmlParts);
-
-      // 5. Convert merged XML to final PDF
-      var mergedPdf = render.xmlToPdf({
-        xmlString: mergedXml
-      });
-
-      var rootFolderId = getOrCreateFolder(ROOT_FOLDER_NAME, null);
-      var subFolderName = truncate('Task-' + taskId + ' - ' + taskTitle, 100);
-      var subFolderId = getOrCreateFolder(subFolderName, rootFolderId);
-
-      mergedPdf.name = 'PSV_Report_' + sanitize(fileNameSeed) + '_' + formatDateMMDDYYYY(new Date()) + '.pdf';
-      mergedPdf.folder = subFolderId;
-
-      var mergedFileId = mergedPdf.save();
-
-      // 6. Update PSV records with merged file
-      for (var j = 0; j < psvIds.length; j++) {
-        record.submitFields({
-          type: PSV_RECORD_TYPE,
-          id: psvIds[j],
-          values: {
-            custrecord_bc_psv_pdf_file_id: mergedFileId,
-            custrecord_bc_psv_pdf_error: ''
-          }
-        });
-      }
-
-      // 7. Attach only merged file
-      record.attach({
-        record: { type: 'file', id: mergedFileId },
-        to: { type: 'task', id: taskId }
-      });
-
-      // 8. Store merged file in task field
-      record.submitFields({
-        type: record.Type.TASK,
-        id: taskId,
-        values: {
-          custevent_bc_psv_pdf_generated: true,
+          custevent_bc_psv_pdf_generated: successCount > 0,
           custevent_bc_psv_folder_id: subFolderId,
-          custevent_bc_psv_pdf: mergedFileId,
-          custevent_psv_error_log: ''
+          custevent_bc_psv_pdf: firstFileId || '',
+          custevent_psv_error_log: errorMessages.join('\n')
         }
       });
 
-      log.audit('PSV PDF', 'Merged PDF created. fileId=' + mergedFileId);
+      log.audit(
+        'PSV PDF',
+        'Task ' + taskId + ': ' + successCount + ' PDF(s) generated out of ' + psvIds.length
+      );
 
     } catch (e) {
-      log.error('PSV PDF Error', 'Task ' + taskId + ': ' + e.message);
+      log.error('PSV PDF Error', 'Task ' + taskId + ': ' + e.message + '\n' + e.stack);
 
       try {
         record.submitFields({
@@ -175,13 +187,13 @@ define([
           }
         });
       } catch (inner) {
-        log.error('PSV PDF Error', 'Could not log error: ' + inner.message);
+        log.error('PSV PDF Error', 'Could not log task error: ' + inner.message);
       }
     }
   };
 
   const findPsvTestsByTask = (taskId) => {
-    var results = search.create({
+    const results = search.create({
       type: PSV_RECORD_TYPE,
       filters: [
         ['custrecord_bc_psv_task', 'anyof', taskId]
@@ -189,121 +201,32 @@ define([
       columns: ['internalid']
     }).run().getRange({ start: 0, end: 1000 });
 
-    var ids = [];
-    for (var i = 0; i < results.length; i++) {
+    const ids = [];
+
+    for (let i = 0; i < results.length; i++) {
       ids.push(results[i].id);
     }
+
     return ids;
   };
 
-  const renderSinglePsvXml = (psvRec) => {
-    var renderer = render.create();
+  const renderPsvPdf = (psvRec) => {
+    const renderer = render.create();
+
     renderer.setTemplateByScriptId({
       scriptId: TEMPLATE_ID
     });
+
     renderer.addRecord({
       templateName: 'record',
       record: psvRec
     });
-    return renderer.renderAsString();
-  };
 
-  const stripOuterPdfTags = (xmlString) => {
-    return xmlString
-      .replace(/<\\?xml[^>]*>/i, '')
-      .replace(/<!DOCTYPE[^>]*>/i, '')
-      .replace(/<pdf[^>]*>/i, '')
-      .replace(/<\/pdf>/i, '')
-      .trim();
-  };
-
-  const buildPdfSetXml = (xmlParts) => {
-    var xml = '<?xml version="1.0"?>';
-    xml += '<pdfset>';
-
-    for (var i = 0; i < xmlParts.length; i++) {
-      xml += '<pdf>';
-      xml += xmlParts[i];
-      xml += '</pdf>';
-    }
-
-    xml += '</pdfset>';
-    return xml;
-  };
-
-  const removeOldAttachedPdfFiles = (taskId) => {
-    try {
-      var oldFieldFileId = getTaskPdfFieldValue(taskId);
-      var attachedFileIds = getAttachedPdfFileIds(taskId);
-
-      for (var i = 0; i < attachedFileIds.length; i++) {
-        try {
-          record.detach({
-            record: { type: 'file', id: attachedFileIds[i] },
-            from: { type: 'task', id: taskId }
-          });
-        } catch (e1) {
-          log.error('DETACH ERROR', attachedFileIds[i] + ': ' + e1.message);
-        }
-      }
-
-      if (oldFieldFileId) {
-        try {
-          file.delete({ id: oldFieldFileId });
-        } catch (e2) {
-          log.error('DELETE FIELD FILE ERROR', oldFieldFileId + ': ' + e2.message);
-        }
-      }
-
-      for (var j = 0; j < attachedFileIds.length; j++) {
-        if (String(attachedFileIds[j]) !== String(oldFieldFileId)) {
-          try {
-            file.delete({ id: attachedFileIds[j] });
-          } catch (e3) {
-            log.error('DELETE ATTACHED FILE ERROR', attachedFileIds[j] + ': ' + e3.message);
-          }
-        }
-      }
-    } catch (e) {
-      log.error('REMOVE OLD FILES ERROR', e.message);
-    }
-  };
-
-  const getTaskPdfFieldValue = (taskId) => {
-    var data = search.lookupFields({
-      type: record.Type.TASK,
-      id: taskId,
-      columns: ['custevent_bc_psv_pdf']
-    });
-
-    if (data.custevent_bc_psv_pdf && data.custevent_bc_psv_pdf.length) {
-      return data.custevent_bc_psv_pdf[0].value;
-    }
-    return '';
-  };
-
-  const getAttachedPdfFileIds = (taskId) => {
-    var ids = [];
-
-    var results = search.create({
-      type: 'file',
-      filters: [
-        ['attachedto', 'anyof', taskId],
-        'AND',
-        ['filetype', 'anyof', 'PDF']
-      ],
-      columns: ['internalid']
-    }).run().getRange({ start: 0, end: 1000 });
-
-    for (var i = 0; i < results.length; i++) {
-      ids.push(results[i].getValue({ name: 'internalid' }));
-    }
-
-    return ids;
+    return renderer.renderAsPdf();
   };
 
   const getOrCreateFolder = (folderName, parentId) => {
-    var filters = [['name', 'is', folderName]];
+    const filters = [['name', 'is', folderName]];
 
     if (parentId) {
       filters.push('AND', ['parent', 'anyof', parentId]);
@@ -311,26 +234,30 @@ define([
       filters.push('AND', ['parent', 'anyof', '@NONE@']);
     }
 
-    var results = search.create({
+    const results = search.create({
       type: search.Type.FOLDER,
       filters: filters,
       columns: ['internalid']
     }).run().getRange({ start: 0, end: 1 });
 
-    if (results.length) return results[0].id;
+    if (results.length) {
+      return results[0].id;
+    }
 
-    var folderRec = record.create({ type: record.Type.FOLDER });
+    const folderRec = record.create({ type: record.Type.FOLDER });
     folderRec.setValue({ fieldId: 'name', value: folderName });
+
     if (parentId) {
       folderRec.setValue({ fieldId: 'parent', value: parentId });
     }
+
     return folderRec.save();
   };
 
   const formatDateMMDDYYYY = (d) => {
-    var mm = String(d.getMonth() + 1).padStart(2, '0');
-    var dd = String(d.getDate()).padStart(2, '0');
-    var yyyy = d.getFullYear();
+    const mm = String(d.getMonth() + 1).padStart(2, '0');
+    const dd = String(d.getDate()).padStart(2, '0');
+    const yyyy = d.getFullYear();
     return mm + dd + yyyy;
   };
 
