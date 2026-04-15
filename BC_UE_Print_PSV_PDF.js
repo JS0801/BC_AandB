@@ -236,8 +236,7 @@ define([
   };
 
   const createMergedPsvPdf = (fileIds, taskId, folderId) => {
-    var xmlContent = '<?xml version="1.0"?>\n';
-    xmlContent += '<!DOCTYPE pdf PUBLIC "-//big.faceless.org//report" "report-1.1.dtd">\n';
+    var xmlContent = "<?xml version=\"1.0\"?>\n<!DOCTYPE pdf PUBLIC \"-//big.faceless.org//report\" \"report-1.1.dtd\">\n";
     xmlContent += '<pdfset>';
 
     for (var i = 0; i < fileIds.length; i++) {
@@ -245,7 +244,8 @@ define([
       var pdfUrl = xml.escape({ xmlText: loadedPdf.url });
       log.debug('pdfUrl', pdfUrl)
       xmlContent += "<pdf src='" + pdfUrl + "'/>";
-    }xmlContent += '</pdfset>';
+    }
+    xmlContent += '</pdfset>';
 
     var mergedPdfObj = render.xmlToPdf({
       xmlString: xmlContent
