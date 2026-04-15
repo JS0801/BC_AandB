@@ -63,7 +63,7 @@ define([
     const taskRec = context.newRecord;
     const newStatus = taskRec.getValue({ fieldId: 'status' });
 
-   // if (newStatus !== 'COMPLETE') return;
+    if (newStatus !== 'COMPLETE') return;
 
     const taskId = taskRec.id;
     const taskTitle = taskRec.getValue({ fieldId: 'title' }) || 'Untitled';
@@ -236,31 +236,38 @@ define([
   };
 
   const createMergedPsvPdf = (fileIds, taskId, folderId) => {
-  var domain = url.resolveDomain({ hostType: url.HostType.APPLICATION });
+    var xmlContent = '<?xml version="1.0"?>\n';
+    xmlContent += '<!DOCTYPE pdf PUBLIC "-//big.faceless.org//report" "report-1.1.dtd">\n';
+    xmlContent += '<pdfset>';
 
-  var xmlContent = '<?xml version="1.0"?>\n';
-  xmlContent += '<!DOCTYPE pdf PUBLIC "-//big.faceless.org//report" "report-1.1.dtd">\n';
-  xmlContent += '<pdfset>';
+    for (var i = 0; i < fileIds.length; i++) {
+      var loadedPdf = file.load({ id: fileIds[i] });
+      var pdfUrl = xml.escape({ xmlText: loadedPdf.url });
+      log.debug('pdfUrl', pdfUrl)
+      xmlContent += "<pdf src='" + pdfUrl + "'/>";
+    }
 
-  for (var i = 0; i < fileIds.length; i++) {
-    var loadedPdf = file.load({ id: fileIds[i] });
-    var absoluteUrl = 'https://' + domain + loadedPdf.url;
-    var escapedUrl = xml.escape({ xmlText: absoluteUrl });
-    xmlContent += '<pdf src="' + escapedUrl.replace(/&/g, "&amp;") + '"/>';
-  }
+    xmlContent += '</pdfset>';
 
-  xmlContent += '</pdfset>';
+    var mergedPdfObj = render.xmlToPdf({
+      xmlString: xmlContent
+    });
 
-  var mergedPdfObj = render.xmlToPdf({ xmlString: xmlContent });
-  mergedPdfObj.name     = 'PSV_Merged_Task_' + taskId + '.pdf';
-  mergedPdfObj.folder   = folderId;
-  mergedPdfObj.isOnline = true;
+    var mergedPdfFile = file.create({
+      name: 'PSV_Merged_Task_' + taskId + '.pdf',
+      fileType: file.Type.PDF,
+      contents: mergedPdfObj.getContents(),
+      folder: folderId
+    });
 
-  var mergedFileId = mergedPdfObj.save();
+    mergedPdfFile.isOnline = true;
 
-  log.audit('PSV PDF', 'Merged PDF created, fileId=' + mergedFileId);
-  return mergedFileId;
-};
+    var mergedFileId = mergedPdfFile.save();
+
+    log.audit('PSV PDF', 'Merged PDF created, fileId=' + mergedFileId);
+
+    return mergedFileId;
+  };
 
   const getOrCreateFolder = (folderName, parentId) => {
     const filters = [['name', 'is', folderName]];
