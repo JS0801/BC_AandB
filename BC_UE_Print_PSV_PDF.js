@@ -255,7 +255,7 @@ define([
     var mergedPdfFile = file.create({
       name: 'PSV_Merged_Task_' + taskId + '.pdf',
       fileType: file.Type.PDF,
-      contents: mergedPdfObj.getContents(),
+      contents: mergedPdfObj,
       folder: folderId
     });
 
