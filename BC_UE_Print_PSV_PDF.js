@@ -120,6 +120,7 @@ define([
 
           pdfFile.name = fileName;
           pdfFile.folder = subFolderId;
+          pdfFile.isOnline = true;
 
           var fileId = pdfFile.save();
           createdIndividualFileIds.push(fileId);
