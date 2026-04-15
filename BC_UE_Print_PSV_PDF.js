@@ -182,7 +182,7 @@ define([
 
   const findPsvTestsByTask = (taskId) => {
     var results = search.create({
-      type: PSV_RECORD_TYPE,
+      type: 'customrecord_bc_psv',
       filters: [
         ['custrecord_bc_psv_task', 'anyof', taskId]
       ],
