@@ -308,6 +308,8 @@ define([
     }
 
     function renderVrPdf(vrRec) {
+
+        log.debug('PDF Details', {TEMPLATE_ID, vrRec})
         var renderer = render.create();
 
         renderer.setTemplateByScriptId({
