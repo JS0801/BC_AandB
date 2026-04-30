@@ -13,15 +13,17 @@ define([
     'N/format'
 ], function (record, search, render, file, runtime, log, format) {
 
-    function afterSubmit(context) {
-
-      var CONFIG = {
+        var CONFIG = {
           ROOT_FOLDER_ID: 3483,
           PDF_TEMPLATE_ID: 'CUSTTMPL_BC_VALVE_REPAIR_PDFHTML_TEMPLATE',
           CLOSED_STATUS: 'COMPLETE',
           VR_RECORD_TYPE: 'customrecord_bc_vr',
           VR_TASK_LINK_FIELD: 'custrecord_bc_vr_ab_control_num'
       };
+
+    function afterSubmit(context) {
+
+
         try {
             // Skip delete events.
             if (context.type === context.UserEventType.DELETE) {
