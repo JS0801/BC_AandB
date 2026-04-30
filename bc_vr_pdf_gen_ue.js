@@ -2,18 +2,6 @@
  * @NApiVersion 2.1
  * @NScriptType UserEventScript
  * @NModuleScope SameAccount
- *
- * Script ID:   customscript_bc_vr_pdf_gen_ue
- * Deployment:  Task (Activity) record - Create + Edit
- * Purpose:     When a Task transitions to Closed/Complete, locate every
- *              Valve Repair custom record linked to the Task, render an
- *              individual Advanced PDF for each, save them to the Task's
- *              File Cabinet sub-folder, then build a merged PDF combining
- *              all of them and attach the merged PDF to the Task.
- *              Adds Preview / Regenerate buttons in View mode via Suitelet.
- *
- * Project:     A&B Valve | Valve Repair Report Auto-Creation
- * Reference:   bc_psv_pdf_ue.js (same pattern, different record + template)
  */
 define([
     'N/record',
@@ -100,7 +88,7 @@ define([
         if (context.type === context.UserEventType.EDIT) {
             var oldRec    = context.oldRecord;
             var oldStatus = oldRec.getValue({ fieldId: 'status' });
-            if (oldStatus === CLOSED_STATUS) return;
+            if (oldStatus === CLOSED_STATUS) //return;
         }
 
         var taskId    = taskRec.id;
