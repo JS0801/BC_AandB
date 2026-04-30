@@ -15,7 +15,7 @@ define([
 
         var CONFIG = {
           ROOT_FOLDER_ID: 3483,
-          PDF_TEMPLATE_ID: 'CUSTTMPL_BC_VALVE_REPAIR_PDFHTML_TEMPLATE',
+          PDF_TEMPLATE_ID: 'custtmpl_bc_valve_repair_pdfhtml_template',
           CLOSED_STATUS: 'COMPLETE',
           VR_RECORD_TYPE: 'customrecord_bc_vr',
           VR_TASK_LINK_FIELD: 'custrecord_bc_vr_ab_control_num'
