@@ -80,15 +80,11 @@ define([
         // Must be Closed/Complete to proceed
         if (newStatus !== CLOSED_STATUS) return;
 
-        // Status-transition guard: only fire when Task is moving INTO
-        // Closed for the first time on this save. If it was already Closed
-        // before this edit, do nothing (prevents re-runs on every later
-        // edit of an already-closed Task). UC-003 (re-close) still works
-        // because Task moves Open -> Closed on the re-close save.
+
         if (context.type === context.UserEventType.EDIT) {
             var oldRec    = context.oldRecord;
             var oldStatus = oldRec.getValue({ fieldId: 'status' });
-            if (oldStatus === CLOSED_STATUS) //return;
+            // if (oldStatus === CLOSED_STATUS) return;
         }
 
         var taskId    = taskRec.id;
