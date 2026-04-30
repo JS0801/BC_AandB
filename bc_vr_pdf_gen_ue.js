@@ -18,7 +18,7 @@ define([
     // CONFIG
     // ---------------------------------------------------------------------
     var VR_RECORD_TYPE     = 'customrecord_bc_vr';
-    var TEMPLATE_ID        = 'custtmpl_bc_valve_repair_pdfhtml_template';
+    var TEMPLATE_ID        = 'CUSTTMPL_BC_VALVE_REPAIR_PDFHTML_TEMPLATE';
     var ROOT_FOLDER_ID     = 3483;            // "VR Reports" root folder
     var CLOSED_STATUS      = 'COMPLETE';      // Task status code for Closed
     var VR_TASK_LINK_FIELD = 'custrecord_bc_vr_ab_control_num';
@@ -309,7 +309,6 @@ define([
 
     function renderVrPdf(vrRec) {
 
-        log.debug('PDF Details', {TEMPLATE_ID, vrRec})
         var renderer = render.create();
 
         renderer.setTemplateByScriptId({
