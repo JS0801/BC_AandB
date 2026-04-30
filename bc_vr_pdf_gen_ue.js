@@ -200,7 +200,7 @@ define([
 
                     log.error(
                         'VR PDF Error',
-                        'VR ' + vrId + ': ' + msg
+                        'VR ' + vrId + ': ' + perRecordErr
                     );
 
                     try {
