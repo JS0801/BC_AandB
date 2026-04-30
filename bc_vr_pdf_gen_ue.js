@@ -247,7 +247,7 @@ define([
                 type: record.Type.TASK,
                 id:   taskId,
                 values: {
-                    custbody_bc_vr_folder_id:     subFolderId,
+                    custevent_bc_vr_folder_id:     subFolderId,
                     custevent_bc_vr_pdf_generated:           mergedFileId || '',
                     custevent_bc_valve_error_log:     errorMessages.join('\n')
                 },
