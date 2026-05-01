@@ -469,7 +469,7 @@ define([
     }
 
     return {
-      //  beforeLoad:  beforeLoad,
+        beforeLoad:  beforeLoad,
         afterSubmit: afterSubmit
     };
 });
