@@ -13,11 +13,12 @@
  *   taskId  - internal id of the Task record
  *   action  - 'preview' (default) or 'regenerate'
  *
- * preview     - streams the merged VR PDF stored in
+ * preview     - Streams the merged VR PDF stored in
  *               custevent_bc_vr_pdf_generated to the browser inline.
- * regenerate  - re-runs the full PDF generation pipeline (the same logic
- *               the User Event uses on Task close), then redirects back
- *               to the Task record.
+ * regenerate  - Re-runs the full PDF generation pipeline (the same logic
+ *               the User Event uses on Task close), then returns a JSON
+ *               { success, message } payload that the client script
+ *               renders in its overlay.
  */
 define([
     'N/record',
@@ -25,10 +26,8 @@ define([
     'N/search',
     'N/file',
     'N/log',
-    'N/url',
-    'N/redirect',
-    'N/https'
-], function (record, render, search, file, log, url, redirect, https) {
+    'N/url'
+], function (record, render, search, file, log, url) {
 
     // ---------------------------------------------------------------------
     // CONFIG - must match UE / MR
@@ -48,8 +47,10 @@ define([
         var action = (req.parameters.action || 'preview').toLowerCase();
 
         if (!taskId) {
-            res.write({ output: 'Missing required parameter: taskId' });
-            return;
+            return writeJson(res, {
+                success: false,
+                message: 'Missing required parameter: taskId'
+            });
         }
 
         try {
@@ -58,17 +59,30 @@ define([
             } else if (action === 'regenerate') {
                 handleRegenerate(taskId, res);
             } else {
-                res.write({ output: 'Unknown action: ' + action });
+                writeJson(res, {
+                    success: false,
+                    message: 'Unknown action: ' + action
+                });
             }
         } catch (e) {
             log.error('VR PDF Suitelet',
                 'Task ' + taskId + ' / ' + action + ': ' +
                 e.message + (e.stack ? '\n' + e.stack : ''));
-            res.write({
-                output: '<h2>Error</h2><pre>' +
-                        (e.message || String(e)) +
-                        '</pre><p><a href="javascript:history.back()">Back</a></p>'
-            });
+
+            // Preview goes to browser tab and uses HTML; Regenerate is
+            // called via AJAX and expects JSON.
+            if (action === 'regenerate') {
+                writeJson(res, {
+                    success: false,
+                    message: e.message || String(e)
+                });
+            } else {
+                res.write({
+                    output: '<h2>Error</h2><pre>' +
+                            (e.message || String(e)) +
+                            '</pre><p><a href="javascript:history.back()">Back</a></p>'
+                });
+            }
         }
     }
 
@@ -102,7 +116,7 @@ define([
     }
 
     // =====================================================================
-    // REGENERATE - re-run full generation pipeline, redirect back
+    // REGENERATE - re-run full pipeline, return JSON
     // =====================================================================
     function handleRegenerate(taskId, res) {
         var taskLookup = search.lookupFields({
@@ -117,13 +131,33 @@ define([
 
         var summary = regenerateForTask(taskId, taskTitle);
 
-        // Redirect back to the Task in view mode.
-        redirect.toRecord({
-            type: record.Type.TASK,
-            id:   taskId
-        });
+        if (summary.successCount === 0) {
+            return writeJson(res, {
+                success: false,
+                message: summary.errors && summary.errors.length
+                    ? 'No PDFs generated. ' + summary.errors.join(' | ')
+                    : 'No Valve Repair records linked to this Task.'
+            });
+        }
 
-        // (redirect.toRecord ends the response; nothing after it runs.)
+        var msg = summary.successCount +
+                  ' Valve Repair PDF(s) generated' +
+                  (summary.errors && summary.errors.length
+                      ? '; ' + summary.errors.length + ' record(s) had errors.'
+                      : '.');
+
+        writeJson(res, {
+            success:      true,
+            message:      msg,
+            successCount: summary.successCount,
+            mergedFileId: summary.mergedFileId,
+            errors:       summary.errors
+        });
+    }
+
+    function writeJson(res, payload) {
+        res.setHeader({ name: 'Content-Type', value: 'application/json' });
+        res.write({ output: JSON.stringify(payload) });
     }
 
     // =====================================================================
@@ -141,7 +175,7 @@ define([
                         'No Valve Repair records linked to Task ' + taskId + '.'
                 }
             });
-            return { successCount: 0, mergedFileId: '', errors: ['No VR records'] };
+            return { successCount: 0, mergedFileId: '', errors: ['No VR records linked.'] };
         }
 
         var subFolderName = truncate('Task-' + taskId + ' - ' + taskTitle, 100);
