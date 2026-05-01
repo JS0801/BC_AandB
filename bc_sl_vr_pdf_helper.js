@@ -96,7 +96,7 @@ define([
             columns: ['custevent_bc_vr_pdf_generated']
         });
 
-        var fileId = lookup.custevent_bc_vr_pdf_generated;.
+        var fileId = lookup.custevent_bc_vr_pdf_generated;
         log.debug('fileId', fileId)
         if (!fileId) {
             res.write({
