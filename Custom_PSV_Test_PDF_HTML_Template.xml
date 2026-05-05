@@ -87,16 +87,16 @@ b { font-weight: bold; color: #333333; }
 
 <tr>
 <td style="width: 20%;" align="right">MANUFACTURER</td>
-<td style="border-bottom: 1px solid rgb(0, 0, 0); width: 25%;">${record.custrecord_bc_psv_manufacturer}</td>
+<td style="border-bottom: 1px solid rgb(0, 0, 0); width: 25%;">${record.custrecord_bc_fsm_psv_valve.custrecord_bc_fsm_asset_manu}</td>
 <td style="width: 10%;">&nbsp;</td>
 <td style="width: 16%;" align="right">SIZE</td>
-<td style="border-bottom: 1px solid rgb(0, 0, 0); width: 28%;">${record.custrecord_bc_psv_size}</td>
+<td style="border-bottom: 1px solid rgb(0, 0, 0); width: 28%;">${record.custrecord_bc_fsm_psv_valve.custrecord_bc_fsm_asset_size}</td>
   <td style="width: 10%;">&nbsp;</td>
 </tr>
 
   <tr>
 <td style="width: 20%;" align="right">MODEL #</td>
-<td style="border-bottom: 1px solid rgb(0, 0, 0); width: 25%;">${record.custrecord_bc_psv_model}</td>
+<td style="border-bottom: 1px solid rgb(0, 0, 0); width: 25%;">${record.custrecord_bc_fsm_psv_valve.custrecord_bc_fsm_asset_model}</td>
 <td style="width: 10%;">&nbsp;</td>
 <td style="width: 16%;" align="right">CONNECTION</td>
 <td style="border-bottom: 1px solid rgb(0, 0, 0); width: 28%;">${record.custrecord_bc_psv_connection}</td>
@@ -123,7 +123,7 @@ b { font-weight: bold; color: #333333; }
 
   <tr>
 <td style="width: 20%;" align="right">SERIAL#</td>
-<td style="border-bottom: 1px solid rgb(0, 0, 0); width: 25%;">${record.custrecord_bc_psv_serial}</td>
+<td style="border-bottom: 1px solid rgb(0, 0, 0); width: 25%;">${record.custrecord_bc_fsm_psv_valve.custrecord_nx_asset_serial}</td>
 <td style="width: 10%;">&nbsp;</td>
 <td style="width: 16%;" align="right">TEMP. CORRECTION</td>
 <td style="border-bottom: 1px solid rgb(0, 0, 0); width: 28%;">${record.custrecord_bc_psv_temp_correction}</td>
@@ -135,7 +135,10 @@ b { font-weight: bold; color: #333333; }
 <td style="border-bottom: 1px solid rgb(0, 0, 0); width: 25%;">${record.custrecord_bc_psv_asme_uv}</td>
 <td style="width: 10%;">&nbsp;</td>
 <td style="width: 16%;" align="right">YEAR BUILT</td>
-<td style="border-bottom: 1px solid rgb(0, 0, 0); width: 28%;">${record.custrecord_bc_psv_year_built?string("MMM-yyyy")}</td>
+<td style="border-bottom: 1px solid rgb(0, 0, 0); width: 28%;"><#if record.custrecord_bc_fsm_psv_valve.custrecord_bc_fsm_asset_manu_date?has_content>
+  ${record.custrecord_bc_fsm_psv_valve.custrecord_bc_fsm_asset_manu_date?string("MMM-yyyy")}
+</#if>
+</td>
   <td style="width: 10%;">&nbsp;</td>
 </tr>
   </table>
