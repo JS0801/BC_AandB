@@ -200,10 +200,10 @@ b { font-weight: bold; color: #333333; }
     <td style="width: 100%; height: 8px;" align="center"><b>"AFTER ADJ"</b></td><td></td>
 </tr>
     <tr>
-    <td style="width: 100%; height: 8px;" colspan="2" align="right">FIRST POx</td>
+    <td style="width: 100%; height: 8px;" colspan="2" align="right">FIRST POP</td>
     <td style="width: 100%; height: 8px; border: 1px;" align="center">${record.custrecord_bc_psv_pop1_af}</td>
     <td></td>
-    <td style="width: 100%; height: 8px;" colspan="2" align="right">FIRST POР</td>
+    <td style="width: 100%; height: 8px;" colspan="2" align="right">FIRST POP</td>
     <td style="width: 100%; height: 8px; border: 1px;"  align="center">${record.custrecord_bc_psv_pop1_aa}</td><td></td>
 </tr>
     <tr>
@@ -214,10 +214,10 @@ b { font-weight: bold; color: #333333; }
     <td style="width: 100%; height: 8px; border: 1px; border-top: 0px;" align="center">${record.custrecord_bc_psv_pop2_aa}</td><td></td>
 </tr>
     <tr>
-    <td style="width: 100%; height: 8px;" colspan="2" align="right">THIRD POР</td>
+    <td style="width: 100%; height: 8px;" colspan="2" align="right">THIRD POP</td>
     <td style="width: 100%; height: 8px; border: 1px; border-top: 0px;" align="center">${record.custrecord_bc_psv_pop3_af}</td>
     <td></td>
-    <td style="width: 100%; height: 8px;" colspan="2" align="right">THIRD POР</td>
+    <td style="width: 100%; height: 8px;" colspan="2" align="right">THIRD POP</td>
     <td style="width: 100%; height: 8px; border: 1px; border-top: 0px;"  align="center">${record.custrecord_bc_psv_pop3_aa}</td><td></td>
 </tr>
     <tr>
