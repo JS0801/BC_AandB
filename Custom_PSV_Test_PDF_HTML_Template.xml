@@ -246,7 +246,7 @@ b { font-weight: bold; color: #333333; }
     <td style="width: 100%; height: 8px; border: 1px; border-top: 0px;" align="center"><#if record.custrecord_bc_psv_carseal_inlet?has_content>${record.custrecord_bc_psv_carseal_inlet}<#else>N/A</#if></td>
     <td></td>
     <td style="width: 100%; height: 8px;" colspan="2" align="right">ADJUSTING SCREW SEALED</td>
-    <td style="width: 100%; height: 8px; border: 1px; border-top: 0px;"  align="center"><#if record.custrecord_bc_psv_adj_screw?string == "Yes">MF<#else>NO</#if></td><td></td>
+    <td style="width: 100%; height: 8px; border: 1px; border-top: 0px;"  align="center"><#if record.custrecord_bc_psv_adj_screw?string == "Yes">Yes<#else></#if></td><td></td>
 </tr>
 
       <tr style= 'height: 8px;'>
@@ -254,11 +254,11 @@ b { font-weight: bold; color: #333333; }
     <td style="width: 100%; border: 1px; border-top: 0px;" align="center"><#if record.custrecord_bc_psv_carseal_outlet?has_content>${record.custrecord_bc_psv_carseal_outlet}<#else>N/A</#if></td>
     <td></td>
     <td style="width: 100%;" colspan="2" align="right">ADJUSTING RINGS SEALED</td>
-    <td style="width: 100%; border: 1px; border-top: 0px;" align="center"><#if record.custrecord_bc_psv_adj_rings?string == "Yes">MF<#else>NO</#if></td><td></td>
+    <td style="width: 100%; border: 1px; border-top: 0px;" align="center"><#if record.custrecord_bc_psv_adj_rings?string == "Yes">Yes<#else></#if></td><td></td>
 </tr>
       <tr>
         <td colspan = "4" align= 'right'>T/O MARK APPLIED</td>
-        <td style="width: 100%; height: 8px; border: 1px;" align="center"><#if record.custrecord_bc_psv_to_mark?string == "Yes">MF<#else>NO</#if></td>
+        <td style="width: 100%; height: 8px; border: 1px;" align="center"><#if record.custrecord_bc_psv_to_mark?string == "Yes">Yes<#else></#if></td>
       </tr>
   <tr style="height: 40px; padding-top: 10px;">
   <td colspan="2" align="center" 
