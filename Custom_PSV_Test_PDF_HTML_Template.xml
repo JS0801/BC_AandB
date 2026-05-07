@@ -66,19 +66,19 @@ b { font-weight: bold; color: #333333; }
 </tr>
 <tr style="line-height: 8%;">
 <td style="width: 50%; height: 8px;" align="right">ORIGINAL NAMEPLATE LEGIBLE</td>
-<td style="border-bottom: 1px solid rgb(0, 0, 0); width: 50%; height: 8px;" align="center"><#if record.custrecord_bc_psv_nameplate_legible?string == "Yes">MF<#else>NO</#if></td>
+<td style="border-bottom: 1px solid rgb(0, 0, 0); width: 50%; height: 8px;" align="center"><#if record.custrecord_bc_psv_nameplate_legible?string == "Yes">Yes<#else></#if></td>
 </tr>
 <tr style="line-height: 8%;">
 <td style="width: 50%; height: 8px;" align="right">SEALS INTACT</td>
-<td style="border-bottom: 1px solid rgb(0, 0, 0); width: 50%; height: 8px;" align="center"><#if record.custrecord_bc_psv_seals_intact?string == "Yes">MF<#else>NO</#if></td>
+<td style="border-bottom: 1px solid rgb(0, 0, 0); width: 50%; height: 8px;" align="center"><#if record.custrecord_bc_psv_seals_intact?string == "Yes">Yes<#else></#if></td>
 </tr>
 <tr style="line-height: 8%;">
 <td style="width: 50%; height: 8px;" align="right">NO EXTERNAL DAMAGE</td>
-<td style="border-bottom: 1px solid rgb(0, 0, 0); width: 50%; height: 8px;" align="center"><#if record.custrecord_bc_psv_no_ext_damage?string == "Yes">MF<#else>NO</#if></td>
+<td style="border-bottom: 1px solid rgb(0, 0, 0); width: 50%; height: 8px;" align="center"><#if record.custrecord_bc_psv_no_ext_damage?string == "Yes">Yes<#else></#if></td>
 </tr>
 <tr style="line-height: 8%;">
 <td style="width: 50%; height: 8px;" align="right">INLET &amp; OUTLET CLEAR</td>
-<td style="width: 50%; height: 8px;" align="center"><#if record.custrecord_bc_psv_inlet_clear?string == "Yes">MF<#else>NO</#if></td>
+<td style="width: 50%; height: 8px;" align="center"><#if record.custrecord_bc_psv_inlet_clear?string == "Yes">Yes<#else></#if></td>
 </tr></table>
 </td>
 </tr>
