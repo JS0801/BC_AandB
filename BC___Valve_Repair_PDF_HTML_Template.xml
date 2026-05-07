@@ -1,0 +1,527 @@
+<?xml version="1.0"?>
+<!DOCTYPE pdf PUBLIC "-//big.faceless.org//report" "report-1.1.dtd">
+<pdf>
+<head>
+	<link name="NotoSans" type="font" subtype="truetype" src="${nsfont.NotoSans_Regular}" src-bold="${nsfont.NotoSans_Bold}" src-italic="${nsfont.NotoSans_Italic}" src-bolditalic="${nsfont.NotoSans_BoldItalic}" bytes="2" />
+	<#if .locale == "zh_CN">
+		<link name="NotoSansCJKsc" type="font" subtype="opentype" src="${nsfont.NotoSansCJKsc_Regular}" src-bold="${nsfont.NotoSansCJKsc_Bold}" bytes="2" />
+	<#elseif .locale == "zh_TW">
+		<link name="NotoSansCJKtc" type="font" subtype="opentype" src="${nsfont.NotoSansCJKtc_Regular}" src-bold="${nsfont.NotoSansCJKtc_Bold}" bytes="2" />
+	<#elseif .locale == "ja_JP">
+		<link name="NotoSansCJKjp" type="font" subtype="opentype" src="${nsfont.NotoSansCJKjp_Regular}" src-bold="${nsfont.NotoSansCJKjp_Bold}" bytes="2" />
+	<#elseif .locale == "ko_KR">
+		<link name="NotoSansCJKkr" type="font" subtype="opentype" src="${nsfont.NotoSansCJKkr_Regular}" src-bold="${nsfont.NotoSansCJKkr_Bold}" bytes="2" />
+	<#elseif .locale == "th_TH">
+		<link name="NotoSansThai" type="font" subtype="opentype" src="${nsfont.NotoSansThai_Regular}" src-bold="${nsfont.NotoSansThai_Bold}" bytes="2" />
+	</#if>
+    <macrolist>
+      <macro id="nlheader">
+            
+<table style="width: 100%;"><tr>
+<td style="border: none; align: left; font-size: 8pt; padding-left: 150px;">VR Traveler R.2</td>
+<td style="border: none; align: right; font-size: 8pt;">${.now?string["MMM d, yyyy"]}</td>
+</tr></table>
+
+        </macro>
+        <macro id="nlfooter">
+            
+<table style="width: 100%;">
+<tr>
+<td style="border: none; align: right; font-size: 8pt;" colspan="2"><pagenumber/> of <totalpages/></td>
+</tr></table>
+
+        </macro>
+    </macrolist>
+    <style type="text/css">
+  * { font-family: Helvetica, Arial, sans-serif; }
+  body { font-size: 8pt; }
+  table { table-layout: fixed; width: 100%; border-collapse: collapse; }
+  td { padding: 2px 3px; vertical-align: middle; }
+  th { padding: 3px; font-weight: bold; font-size: 8pt; align: center;
+       background-color: #d9d9d9; }
+  .grid td, .grid th { border: 0.5pt solid #000000; }
+  .nb td { border: none; padding: 1px 2px; }
+  .hdr { background-color: #d9d9d9; font-weight: bold; align: center; font-size: 8pt; }
+  .subhdr { background-color: #e8e8e8; font-weight: bold; align: center; font-size: 7.5pt; }
+  .lbl { font-weight: bold; }
+  .ctr { align: center; }
+  .rgt { align: right; }
+  .company { font-size: 12.5pt; font-weight: bold; }
+  .bigtitle { font-size: 12.5pt; font-weight: bold; }
+  .small { font-size: 7pt; }
+  .boxhdr { background-color: #d9d9d9; font-weight: bold; align: center; font-size: 8pt; }
+  .sigcol { font-size: 8pt; }
+</style>
+</head>
+<body footer="nlfooter" header="nlheader" footer-height="0.15in" header-height="0.20in" padding="0.3in 0.3in 0.5in 0.3in" size="Letter">
+    <!-- ======================================================= --> <!-- PAGE 1                                                  --> <!-- ======================================================= --> <!-- TITLE BAR -->
+<table class="grid"><tr>
+<td style="width: 55%; align: center; vertical-align: middle; padding: 8px;" rowspan="2">
+      <table style="width: 100%; height: 100%;">
+        <tr  line-height = '10'><td style="align: center; vertical-align: middle; font-weight: bold;  border: none;" class="company">A&amp;B VALVE AND PIPING</td></tr>
+        <tr  line-height = '10'><td style="align: center; vertical-align: middle; font-weight: bold;  border: none;" class="company">SYSTEMS, LLC</td></tr>
+    </table>
+</td>
+<td style="width: 45%; padding: 4px; vertical-align: middle;" rowspan="2">
+    <table style="width: 100%; height: 100%;">
+        <tr  line-height = '10'><td style="align: center; vertical-align: middle; font-weight: bold;  border: none;" class="bigtitle">VR</td></tr>
+      <tr  line-height = '10'><td style="align: center; vertical-align: middle; font-weight: bold;  border: none;" class="bigtitle">TRAVELER</td></tr>
+    </table>
+</td>
+<td class="hdr" style="width: 50%;" align="center">
+  <table style="width: 100%; height: 100%;">
+        <tr  line-height = '4'><td style="align: center; vertical-align: middle; font-weight: bold;  border: none;">ASSET #:</td></tr>
+      <tr  line-height = '4'><td style="align: center; vertical-align: middle; font-weight: normal; font-style: italic; font-size: 6.5pt; color: #999999; border: none;">(P&amp;ID/CUSTOMER ASSIGNED)</td></tr>
+    </table>
+  </td>
+<td class="hdr" style="width: 50%;">
+   <table style="width: 100%; height: 100%;">
+        <tr  line-height = '4'><td style="align: center; vertical-align: middle; font-weight: bold;  border: none;">A&amp;B Control #:</td></tr>
+      <tr  line-height = '4'><td style="align: center; vertical-align: middle; font-weight: normal; font-style: italic; font-size: 6.5pt; color: #999999; border: none;">(FIELD TICKET #)</td></tr>
+    </table>
+</td>
+</tr>
+<tr>
+<td class="ctr">${record.custrecord_bc_vr_ab_control_num}</td>
+<td class="ctr">${record.name}</td>
+</tr></table>
+<!-- CUSTOMER / WORK ORDER / DATE RECEIVED -->
+<table class="grid"><tr>
+<td style="width: 33.33%;"><span class="lbl">CUSTOMER:</span> ${record.custrecord_bc_vr_customer}</td>
+<td style="width: 33.33%;"><span class="lbl">WORK ORDER #:</span> ${record.custrecord_bc_vr_work_order}</td>
+<td style="width: 33.33%;"><span class="lbl">DATE RECEIVED:</span> ${record.custrecord_bc_vr_date_received?has_content?then(record.custrecord_bc_vr_date_received?string["MMM d, yyyy"], "")}</td>
+</tr></table>
+<!-- NAMEPLATE / PREVIOUS REPAIR / PRETEST -->
+<table class="grid"><tr>
+<td class="hdr" style="width: 35%;" colspan="2">
+  <table style="width: 100%; height: 100%;">
+        <tr  line-height = '4'><td style="align: center; vertical-align: middle; font-weight: bold;  border: none;">RECORD OF ORIGINAL</td></tr>
+      <tr  line-height = '4'><td style="align: center; vertical-align: middle; font-weight: bold;  border: none;">NAMEPLATE DATA</td></tr>
+    </table>
+   </td>
+<td class="hdr" style="width: 35%;" colspan="2">RECORD OF PREVIOUS REPAIR</td>
+<td class="hdr" style="width: 25%;">RECORD OF PRETEST</td>
+</tr>
+<tr>
+<td style="width: 20%;"><span class="lbl">MFG:</span> ${record.custrecord_bc_vr_mfg}</td>
+<td style="width: 20%;"><span class="lbl">SIZE:</span> ${record.custrecord_bc_vr_size}</td>
+<td style="width: 17%;"><span class="lbl">TYPE:</span> ${record.custrecord_bc_vr_prev_type}</td>
+<td style="width: 18%;"><span class="lbl">DATE:</span> ${record.custrecord_bc_vr_prev_date?has_content?then(record.custrecord_bc_vr_prev_date?string["MMM d, yyyy"], "")}</td>
+<td style="width: 25%;"><span class="lbl">Set Pressure:</span> ${record.custrecord_bc_vr_pretest_set}</td>
+</tr>
+<tr>
+<td><span class="lbl">TYPE:</span> ${record.custrecord_bc_vr_type}</td>
+<td><span class="lbl">SET:</span> ${record.custrecord_bc_vr_set}</td>
+<td><span class="lbl">SET:</span> ${record.custrecord_bc_vr_prev_set}</td>
+<td><span class="lbl">CDTP:</span> ${record.custrecord_bc_vr_prev_cdtp}</td>
+<td><span class="lbl">Tightness:</span> ${record.custrecord_bc_vr_pretest_tightness}</td>
+</tr>
+<tr>
+<td><span class="lbl">S/N:</span> ${record.custrecord_bc_vr_serial}</td>
+<td><span class="lbl">CDTP:</span> ${record.custrecord_bc_vr_cdtp}</td>
+<td><span class="lbl">CAP:</span> ${record.custrecord_bc_vr_prev_cap}</td>
+<td><span class="lbl">VR CO:</span> ${record.custrecord_bc_vr_prev_vrco}</td>
+<td rowspan="2"><span class="lbl">Evaluation:</span> ${record.custrecord_bc_vr_pretest_eval}</td>
+</tr>
+<tr>
+<td><span class="lbl">CAP:</span> ${record.custrecord_bc_vr_cap}</td>
+<td><span class="lbl">CODE:</span> ${record.custrecord_bc_vr_code}</td>
+<td colspan="2"><span class="lbl">REPAIR S/N:</span> ${record.custrecord_bc_vr_prev_repair_sn}</td>
+</tr></table>
+<!-- DISASSEMBLY & CLEANING / CRITICAL INSPECTION / INSPECTION TOOLS -->
+<table class="grid"><tr>
+<td class="hdr" colspan="3">Record of Disassembly and Cleaning</td>
+<td class="hdr" colspan="3">Record of Critical Inspection</td>
+<td class="hdr" style="width: 26%;" rowspan="2">
+  <table style="width: 100%; height: 100%;">
+        <tr  line-height = '4'><td style="align: center; vertical-align: middle; font-weight: bold;  border: none;">Record of</td></tr>
+      <tr  line-height = '4'><td style="align: center; vertical-align: middle; font-weight: bold;  border: none;">Inspection Tools</td></tr>
+    </table>
+</td>
+</tr>
+<tr>
+<th style="width: 14%;">Part Name</th>
+<th style="width: 10%;">As Found</th>
+<th style="width: 10%;">Clean</th>
+<th style="width: 16%;">Comments</th>
+<th style="width: 12%;">Accept</th>
+<th style="width: 12%;">Replace</th>
+</tr>
+<!-- Row 1: Cap & Lever -->
+<tr>
+<td><span class="lbl">Cap &amp; Lever</span></td>
+<td class="ctr">${record.custrecord_bc_vr_cap_lever_af}</td>
+<td class="ctr">${record.custrecord_bc_vr_cap_lever_clean}</td>
+<td>${record.custrecord_bc_vr_cap_lever_comm}</td>
+<td class="ctr">${record.custrecord_bc_vr_cap_lever_acc}</td>
+<td class="ctr">${record.custrecord_bc_vr_cap_lever_rep}</td>
+<td class="hdr">Dial Caliper</td>
+</tr>
+<!-- Row 2: Adjusting Screw -->
+<tr>
+<td><span class="lbl">Adjusting Screw</span></td>
+<td class="ctr">${record.custrecord_bc_vr_adj_screw_af}</td>
+<td class="ctr">${record.custrecord_bc_vr_adj_screw_clean}</td>
+<td>${record.custrecord_bc_vr_adj_screw_comm}</td>
+<td class="ctr">${record.custrecord_bc_vr_adj_screw_acc}</td>
+<td class="ctr">${record.custrecord_bc_vr_adj_screw_rep}</td>
+<td><span class="lbl">M&amp;TE S/N:</span> ${record.custrecord_bc_vr_caliper_mte_sn}</td>
+</tr>
+<!-- Row 3: Bonnet or Yoke -->
+<tr>
+<td><span class="lbl">Bonnet or Yoke</span></td>
+<td class="ctr">${record.custrecord_bc_vr_bonnet_af}</td>
+<td class="ctr">${record.custrecord_bc_vr_bonnet_clean}</td>
+<td>${record.custrecord_bc_vr_bonnet_comm}</td>
+<td class="ctr">${record.custrecord_bc_vr_bonnet_acc}</td>
+<td class="ctr">${record.custrecord_bc_vr_bonnet_rep}</td>
+<td><span class="lbl">Due Date:</span> ${record.custrecord_bc_vr_caliper_due_date?has_content?then(record.custrecord_bc_vr_caliper_due_date?string["MMM d, yyyy"], "")}</td>
+</tr>
+<!-- Row 4: Spring/Washers -->
+<tr>
+<td><span class="lbl">Spring/Washers</span></td>
+<td class="ctr">${record.custrecord_bc_vr_spring_af}</td>
+<td class="ctr">${record.custrecord_bc_vr_spring_clean}</td>
+<td>${record.custrecord_bc_vr_spring_comm}</td>
+<td class="ctr">${record.custrecord_bc_vr_spring_acc}</td>
+<td class="ctr">${record.custrecord_bc_vr_spring_rep}</td>
+<td class="hdr">Dial Indicator</td>
+</tr>
+<!-- Row 5: Spindle or Stem -->
+<tr>
+<td><span class="lbl">Spindle or Stem</span></td>
+<td class="ctr">${record.custrecord_bc_vr_spindle_af}</td>
+<td class="ctr">${record.custrecord_bc_vr_spindle_clean}</td>
+<td>${record.custrecord_bc_vr_spindle_comm}</td>
+<td class="ctr">${record.custrecord_bc_vr_spindle_acc}</td>
+<td class="ctr">${record.custrecord_bc_vr_spindle_rep}</td>
+<td><span class="lbl">M&amp;TE S/N:</span> ${record.custrecord_bc_vr_indicator_mte_sn}</td>
+</tr>
+<!-- Row 6: Guide -->
+<tr>
+<td><span class="lbl">Guide</span></td>
+<td class="ctr">${record.custrecord_bc_vr_guide_af}</td>
+<td class="ctr">${record.custrecord_bc_vr_guide_clean}</td>
+<td>${record.custrecord_bc_vr_guide_comm}</td>
+<td class="ctr">${record.custrecord_bc_vr_guide_acc}</td>
+<td class="ctr">${record.custrecord_bc_vr_guide_rep}</td>
+<td><span class="lbl">Due Date:</span> ${record.custrecord_bc_vr_indicator_due_date?has_content?then(record.custrecord_bc_vr_indicator_due_date?string["MMM d, yyyy"], "")}</td>
+</tr>
+<!-- Row 7: Stem Retainer — begins "Record of PRV Repair Parts..." block (rowspan 5) -->
+<tr>
+<td><span class="lbl">Stem Retainer</span></td>
+<td class="ctr">${record.custrecord_bc_vr_stem_ret_af}</td>
+<td class="ctr">${record.custrecord_bc_vr_stem_ret_clean}</td>
+<td>${record.custrecord_bc_vr_stem_ret_comm}</td>
+<td class="ctr">${record.custrecord_bc_vr_stem_ret_acc}</td>
+<td class="ctr">${record.custrecord_bc_vr_stem_ret_rep}</td>
+<td class="ctr" style="vertical-align: middle; background-color: #d9d9d9; font-weight: bold; font-size: 8pt;" rowspan="5">
+  <table style="width: 100%; height: 100%;">
+        <tr line-height = '4'><td style="align: center; vertical-align: middle; font-weight: bold;  border: none;">Record of PRV</td></tr>
+        <tr line-height = '4'><td style="align: center; vertical-align: middle; font-weight: bold;  border: none;">Repair Parts,</td></tr>
+        <tr line-height = '4'><td style="align: center; vertical-align: middle; font-weight: bold;  border: none;">Lapping &amp;</td></tr>
+        <tr line-height = '4'><td style="align: center; vertical-align: middle; font-weight: bold;  border: none;">Assembly</td></tr>
+        <tr line-height = '4'><td style="align: center; vertical-align: middle; font-weight: bold;  border: none;">(Y/N)</td></tr>
+    </table>
+</td>
+</tr>
+<!-- Row 8: Disc Holder -->
+<tr>
+<td><span class="lbl">Disc Holder</span></td>
+<td class="ctr">${record.custrecord_bc_vr_disc_holder_af}</td>
+<td class="ctr">${record.custrecord_bc_vr_disc_holder_clean}</td>
+<td>${record.custrecord_bc_vr_disc_holder_comm}</td>
+<td class="ctr">${record.custrecord_bc_vr_disc_holder_acc}</td>
+<td class="ctr">${record.custrecord_bc_vr_disc_holder_rep}</td>
+</tr>
+<!-- Row 9: Disc -->
+<tr>
+<td><span class="lbl">Disc</span></td>
+<td class="ctr">${record.custrecord_bc_vr_disc_af}</td>
+<td class="ctr">${record.custrecord_bc_vr_disc_clean}</td>
+<td>${record.custrecord_bc_vr_disc_comm}</td>
+<td class="ctr">${record.custrecord_bc_vr_disc_acc}</td>
+<td class="ctr">${record.custrecord_bc_vr_disc_rep}</td>
+</tr>
+<!-- Row 10: Bellows/O-Ring -->
+<tr>
+<td><span class="lbl">Bellows/O-Ring</span></td>
+<td class="ctr">${record.custrecord_bc_vr_bellows_af}</td>
+<td class="ctr">${record.custrecord_bc_vr_bellows_clean}</td>
+<td>${record.custrecord_bc_vr_bellows_comm}</td>
+<td class="ctr">${record.custrecord_bc_vr_bellows_acc}</td>
+<td class="ctr">${record.custrecord_bc_vr_bellows_rep}</td>
+</tr>
+<!-- Row 11: Adj. Ring Pin(s) -->
+<tr>
+<td><span class="lbl">Adj. Ring Pin(s)</span></td>
+<td class="ctr">${record.custrecord_bc_vr_adj_ring_pin_af}</td>
+<td class="ctr">${record.custrecord_bc_vr_adj_ring_pin_clean}</td>
+<td>${record.custrecord_bc_vr_adj_ring_pin_comm}</td>
+<td class="ctr">${record.custrecord_bc_vr_adj_ring_pin_acc}</td>
+<td class="ctr">${record.custrecord_bc_vr_adj_ring_pin_rep}</td>
+</tr>
+<!-- Row 12: Warn Ring — Parts Replaced -->
+<tr>
+<td><span class="lbl">Warn Ring</span></td>
+<td class="ctr">${record.custrecord_bc_vr_warn_ring_af}</td>
+<td class="ctr">${record.custrecord_bc_vr_warn_ring_clean}</td>
+<td>${record.custrecord_bc_vr_warn_ring_comm}</td>
+<td class="ctr">${record.custrecord_bc_vr_warn_ring_acc}</td>
+<td class="ctr">${record.custrecord_bc_vr_warn_ring_rep}</td>
+<td><span class="lbl">Parts Replaced</span> &nbsp; ${record.custrecord_bc_vr_parts_replaced}</td>
+</tr>
+<!-- Row 13: Nozzle — Seats Lapped -->
+<tr>
+<td><span class="lbl">Nozzle</span></td>
+<td class="ctr">${record.custrecord_bc_vr_nozzle_af}</td>
+<td class="ctr">${record.custrecord_bc_vr_nozzle_clean}</td>
+<td>${record.custrecord_bc_vr_nozzle_comm}</td>
+<td class="ctr">${record.custrecord_bc_vr_nozzle_acc}</td>
+<td class="ctr">${record.custrecord_bc_vr_nozzle_rep}</td>
+<td><span class="lbl">Seats Lapped</span> &nbsp; ${record.custrecord_bc_vr_seats_lapped}</td>
+</tr>
+<!-- Row 14: Body or Base — Reassembled -->
+<tr>
+<td><span class="lbl">Body or Base</span></td>
+<td class="ctr">${record.custrecord_bc_vr_body_af}</td>
+<td class="ctr">${record.custrecord_bc_vr_body_clean}</td>
+<td>${record.custrecord_bc_vr_body_comm}</td>
+<td class="ctr">${record.custrecord_bc_vr_body_acc}</td>
+<td class="ctr">${record.custrecord_bc_vr_body_rep}</td>
+<td><span class="lbl">Reassembled</span> &nbsp; ${record.custrecord_bc_vr_reassembled}</td>
+</tr></table>
+<!-- RECORD OF A&B TECH SIGN-OFFS -->
+<table class="grid" style="width: 43%;"><tr>
+<td class="hdr" style="width: 100.301%;" colspan="3">RECORD OF A&amp;B TECH SIGN-OFFS</td>
+</tr>
+<tr>
+<td class="subhdr" style="width: 100.301%;" colspan="3">INDICATES STEP PROPERLY PERFORMED</td>
+</tr>
+<tr>
+<th style="width: 35%;">REPAIR STEP</th>
+<th style="width: 30%;">INITIALS</th>
+<th style="width: 35%;">DATE</th>
+</tr>
+<tr>
+<td style="width: 33.4337%;"><span class="lbl">Orig. Nameplate</span></td>
+<td class="ctr" style="width: 37.0373%;">${record.custrecord_bc_vr_signoff_nameplate_init}</td>
+<td class="ctr" style="width: 29.8301%;">${record.custrecord_bc_vr_signoff_nameplate_date?has_content?then(record.custrecord_bc_vr_signoff_nameplate_date?string["MMM d, yyyy"], "")}</td>
+</tr>
+<tr>
+<td style="width: 33.4337%;"><span class="lbl">Preliminary Test</span></td>
+<td class="ctr" style="width: 37.0373%;">${record.custrecord_bc_vr_signoff_pretest_init}</td>
+<td class="ctr" style="width: 29.8301%;">${record.custrecord_bc_vr_signoff_pretest_date?has_content?then(record.custrecord_bc_vr_signoff_pretest_date?string["MMM d, yyyy"], "")}</td>
+</tr>
+<tr>
+<td style="width: 33.4337%;"><span class="lbl">Disassembly</span></td>
+<td class="ctr" style="width: 37.0373%;">${record.custrecord_bc_vr_signoff_disassem_init}</td>
+<td class="ctr" style="width: 29.8301%;">${record.custrecord_bc_vr_signoff_disassem_date?has_content?then(record.custrecord_bc_vr_signoff_disassem_date?string["MMM d, yyyy"], "")}</td>
+</tr>
+<tr>
+<td style="width: 33.4337%;"><span class="lbl">Cleaning</span></td>
+<td class="ctr" style="width: 37.0373%;">${record.custrecord_bc_vr_signoff_cleaning_init}</td>
+<td class="ctr" style="width: 29.8301%;">${record.custrecord_bc_vr_signoff_cleaning_date?has_content?then(record.custrecord_bc_vr_signoff_cleaning_date?string["MMM d, yyyy"], "")}</td>
+</tr>
+<tr>
+<td style="width: 33.4337%;"><span class="lbl">Critical Inspection</span></td>
+<td class="ctr" style="width: 37.0373%;">${record.custrecord_bc_vr_signoff_inspect_init}</td>
+<td class="ctr" style="width: 29.8301%;">${record.custrecord_bc_vr_signoff_inspect_date?has_content?then(record.custrecord_bc_vr_signoff_inspect_date?string["MMM d, yyyy"], "")}</td>
+</tr>
+<tr>
+<td style="width: 33.4337%;"><span class="lbl">Part Replacement</span></td>
+<td class="ctr" style="width: 37.0373%;">${record.custrecord_bc_vr_signoff_parts_init}</td>
+<td class="ctr" style="width: 29.8301%;">${record.custrecord_bc_vr_signoff_parts_date?has_content?then(record.custrecord_bc_vr_signoff_parts_date?string["MMM d, yyyy"], "")}</td>
+</tr>
+<tr>
+<td style="width: 33.4337%;"><span class="lbl">Lapping &amp; Grinding</span></td>
+<td class="ctr" style="width: 37.0373%;">${record.custrecord_bc_vr_signoff_lapping_init}</td>
+<td class="ctr" style="width: 29.8301%;">${record.custrecord_bc_vr_signoff_lapping_date?has_content?then(record.custrecord_bc_vr_signoff_lapping_date?string["MMM d, yyyy"], "")}</td>
+</tr>
+<tr>
+<td style="width: 33.4337%;"><span class="lbl">Reassembly</span></td>
+<td class="ctr" style="width: 37.0373%;">${record.custrecord_bc_vr_signoff_reassem_init}</td>
+<td class="ctr" style="width: 29.8301%;">${record.custrecord_bc_vr_signoff_reassem_date?has_content?then(record.custrecord_bc_vr_signoff_reassem_date?string["MMM d, yyyy"], "")}</td>
+</tr>
+<tr>
+<td style="width: 33.4337%;"><span class="lbl">Setting &amp; Testing</span></td>
+<td class="ctr" style="width: 37.0373%;">${record.custrecord_bc_vr_signoff_testing_init}</td>
+<td class="ctr" style="width: 29.8301%;">${record.custrecord_bc_vr_signoff_testing_date?has_content?then(record.custrecord_bc_vr_signoff_testing_date?string["MMM d, yyyy"], "")}</td>
+</tr>
+<tr>
+<td style="width: 33.4337%;"><span class="lbl">Locking &amp; Sealing</span></td>
+<td class="ctr" style="width: 37.0373%;">${record.custrecord_bc_vr_signoff_locking_init}</td>
+<td class="ctr" style="width: 29.8301%;">${record.custrecord_bc_vr_signoff_locking_date?has_content?then(record.custrecord_bc_vr_signoff_locking_date?string["MMM d, yyyy"], "")}</td>
+</tr>
+<tr>
+<td style="width: 33.4337%;"><span class="lbl">Repair Nameplate</span></td>
+<td class="ctr" style="width: 37.0373%;">${record.custrecord_bc_vr_signoff_rn_init}</td>
+<td class="ctr" style="width: 29.8301%;">${record.custrecord_bc_vr_signoff_rn_date?has_content?then(record.custrecord_bc_vr_signoff_rn_date?string["MMM d, yyyy"], "")}</td>
+</tr>
+<tr>
+<td style="width: 33.4337%;"><span class="lbl">VR Symb. Applied</span></td>
+<td class="ctr" style="width: 37.0373%;">${record.custrecord_bc_vr_signoff_vrsymbol_init}</td>
+<td class="ctr" style="width: 29.8301%;">${record.custrecord_bc_vr_signoff_vrsymbol_date?has_content?then(record.custrecord_bc_vr_signoff_vrsymbol_date?string["MMM d, yyyy"], "")}</td>
+</tr></table>
+
+<div style="page-break-before: always;"></div>
+  <table class="grid">
+    <tr>
+      <td width = "40%" border = 'none'></td>
+      <td class="hdr" style="width: 33%;">RECORD OF TESTING</td>
+      <td class="hdr" style="width: 25%;">RECORD OF RESET</td>
+      <td class="hdr" style="width: 33%;">RECORD OF SEALING</td>
+    </tr>
+    <tr>
+      <td width = "40%" border = 'none'></td>
+<td style="white-space: nowrap;">Test Fluid:
+    <input id = 'air' name = 'air' type="checkbox" style="display: inline;" <#if record.custrecord_bc_vr_test_fluid_ag?string == "Yes">checked="checked"</#if> /> Air/Gas
+    <input id = 'liquid' name = 'liquid' type="checkbox" style="display: inline;"<#if record.custrecord_bc_vr_test_fluid_liquid?string == "Yes">checked="checked"</#if> /> Liquid
+</td>
+      <td>
+        <table style="width: 100%; height: 100%;">
+          <tr><td border = 'none' >Yes: <#if record.custrecord_bc_vr_test_set_pressure?has_content>Yes</#if></td><td border = '0px' border-left = '1px'>No: <#if record.custrecord_bc_vr_test_set_pressure?has_content><#else>No</#if></td></tr>
+        </table>
+      </td>
+      <td>
+        <table style="width: 100%; height: 100%;">
+          <tr><td border = 'none' colspan = "2">Adj. Screw Locked </td><td border = '0px' border-left = '1px'>${record.custrecord_bc_vr_seal_adj_screw_init}</td></tr>
+        </table>
+      </td>
+    </tr>
+    <tr>
+      <td width = "40%" border = 'none'></td>
+<td><span class="lbl">Set:</span> ${record.custrecord_bc_vr_test_set_pressure} PSIG</td>
+<td><span class="lbl">New Set Press:</span> ${record.custrecord_bc_vr_reset_set_pressure}</td>
+<td>
+  <table style="width: 100%; height: 100%;">
+          <tr><td border = 'none' colspan = "2">Adj. Ring Pin</td><td border = '0px' border-left = '1px'>${record.custrecord_bc_vr_seal_adj_ring_pin_init}</td></tr>
+        </table>
+</td>
+</tr>
+
+        <tr>
+      <td width = "40%" border = 'none'></td>
+<td><span class="lbl">Reseat:</span> ${record.custrecord_bc_vr_test_reseat} PSIG</td>
+<td><span class="lbl">New Cap:</span> ${record.custrecord_bc_vr_reset_cap}</td>
+<td>
+  <table style="width: 100%; height: 100%;">
+          <tr><td border = 'none' colspan = "2">Cap &amp; Lever Sealed</td><td border = '0px' border-left = '1px'>${record.custrecord_bc_vr_seal_cap_lever_init}</td></tr>
+        </table>
+</td>
+</tr>
+
+
+ <tr>
+      <td width = "40%" border = 'none'></td>
+<td><span class="lbl">Tightness:</span> ${record.custrecord_bc_vr_test_tightness}</td>
+<td><span class="lbl">Calculated By:</span> ${record.custrecord_bc_vr_reset_calc_by}</td>
+<td>
+  <table style="width: 100%; height: 100%;">
+          <tr><td border = 'none' colspan = "2">Adj. Ring Pin Sealed</td><td border = '0px' border-left = '1px'>${record.custrecord_bc_vr_seal_adj_ring_pin2_init}</td></tr>
+        </table>
+</td>
+</tr>
+
+ <tr>
+<td width = "40%" border = 'none'></td>
+<td><span class="lbl">M&amp;TE S/N:</span> ${record.custrecord_bc_vr_test_mte_sn}</td>
+<td colspan = "2" class="hdr">RECORD OF REPAIR NAMEPLATE</td>
+</tr>
+
+ <tr>
+<td width = "40%" border = 'none'></td>
+<td><span class="lbl">Due Date:</span> ${record.custrecord_bc_vr_test_mte_due?has_content?then(record.custrecord_bc_vr_test_mte_due?string["MMM d, yyyy"], "")}</td>
+<td rowspan="3" colspan = "2">
+  <table>
+    <tr line-height = "300%">
+      <td border = '0px' align = "center">
+        <table>
+          <tr><td  align="center"  border = 'none'><b>NB Cert#</b></td></tr>
+          <tr><td  align="center"  border = 'none'>${record.custrecord_bc_vr_nb_cert_num}</td></tr>
+        </table></td>
+      <td border = '0px' align = "center" border-left = '1px'>
+        <table>
+          <tr><td align="center"  border = 'none'><b>REPAIRED BY</b></td></tr>
+          <tr><td align="center"  border = 'none'>A&amp;B VALVE</td></tr>
+        </table></td>
+      <td border = '0px' align = "center" border-left = '1px' padding-bottom = "50px"><b>VR Stamp</b><br/></td>
+    </tr>
+  </table>
+</td>
+</tr>
+    <tr ><td rowspan = "2" width = "40%" class="hdr">
+      <table>
+        <tr>
+          <td class="hdr"  border = 'none'>RECORD OF COMMENTS</td>
+        </tr>
+        <tr>
+          <td class="hdr"  border = 'none'>(Document Conversion Details Below)</td>
+        </tr>
+      </table>
+      </td>
+      <td rowspan="1" class="hdr">LOCATION OF REPAIR:</td>
+    </tr>
+    <tr>
+      <td style="white-space: nowrap;" > <span padding-left = "15px"> </span>
+    <input id = 'shop' name = 'shop' type="checkbox" style="display: inline;" <#if record.custrecord_bc_vr_repair_shop?string == "Yes">checked="checked"</#if> /> SHOP
+    <span padding-left = "25px"> </span>
+    <input id = 'field' name = 'field' type="checkbox" style="display: inline;" <#if record.custrecord_bc_vr_repair_field?string == "Yes">checked="checked"</#if> /> FIELD
+</td>
+    </tr>
+    <tr>
+      <td  colspan="2" rowspan = "6" border-bottom="0px" v-align= "top">${record.custrecord_bc_vr_comments}</td>
+      <td colspan = "2">
+      <table style="width: 100%; height: 100%;">
+          <tr>
+            <td border = 'none'>SET: ${record.custrecord_bc_vr_repnp_set}</td>
+            <td border = '0px'  border-left = '1px'>CDTP: ${record.custrecord_bc_vr_repnp_cdtp}</td>
+          </tr>
+        </table>
+     </td>
+    </tr>
+    
+    <tr>
+      <td colspan = "2">
+       <table style="width: 100%; height: 100%;">
+          <tr>
+            <td border = 'none'>CC: ${record.custrecord_bc_vr_repnp_cc}</td>
+            <td border = '0px'  border-left = '1px'>BP: ${record.custrecord_bc_vr_repnp_bp}</td>
+          </tr>
+        </table>
+      </td>
+    </tr>
+
+    <tr>
+      <td colspan = "2">&nbsp;MODEL: ${record.custrecord_bc_vr_repnp_model}</td>
+    </tr>
+    <tr>
+      <td colspan = "2">&nbsp;CAP: ${record.custrecord_bc_vr_repnp_cap}</td>
+    </tr>
+
+    <tr>
+      <td colspan = "2">
+       <table style="width: 100%; height: 100%;">
+          <tr>
+            <td border = 'none'>DATE: ${record.custrecord_bc_vr_repnp_date?has_content?then(record.custrecord_bc_vr_repnp_date?string["MMM d, yyyy"], "")}</td>
+            <td border = '0px'  border-left = '1px'>A&amp;B C/N: ${record.custrecord_bc_vr_repnp_ab_cn}</td>
+          </tr>
+        </table>
+      </td>
+    </tr>
+
+    <tr>
+      <td colspan = "2">&nbsp;QC Reviewer: ${record.custrecord_bc_vr_qc_rev}</td>
+    </tr>
+
+    <tr>
+      <td colspan="2" border-top="0px"><span class="small">(Only recorded on conversions/media changes)</span><br />&nbsp;&nbsp;• NB-18 Manuf. Cert#:<br />&nbsp;&nbsp;• Method of establishing relieving capacity:<br />&nbsp;&nbsp;• K (Certified Coefficient from NB-18):<br />&nbsp;&nbsp;• F (Flow Area from NB-18):</td>
+      <td colspan = "2">&nbsp;QC Review Date: ${record.custrecord_bc_vr_qc_rev_date?has_content?then(record.custrecord_bc_vr_qc_rev_date?string["MMM d, yyyy"], "")}</td>
+    </tr>
+    
+  </table>
+  <pbr />
+
+  <img src="https://11915859-sb1.app.netsuite.com/core/media/media.nl?id=16169&amp;c=11915859_SB1&amp;h=2kwUuIcMNQpV970jIDaygeSGUTnRl8VaLqeQfAD4mPaVyKVk" style="width: 78%; height: 78%;" />
+</body>
+</pdf>
