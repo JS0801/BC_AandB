@@ -103,21 +103,21 @@
 <td class="hdr" style="width: 25%;">RECORD OF PRETEST</td>
 </tr>
 <tr>
-<td style="width: 20%;"><span class="lbl">MFG:</span> ${record.custrecord_bc_vr_mfg}</td>
-<td style="width: 20%;"><span class="lbl">SIZE:</span> ${record.custrecord_bc_vr_size}</td>
+<td style="width: 20%;"><span class="lbl">MFG:</span> ${record.custrecord_bc_fsm_vr_valve.custrecord_bc_fsm_asset_manu}</td>
+<td style="width: 20%;"><span class="lbl">SIZE:</span> ${record.custrecord_bc_fsm_vr_valve.custrecord_bc_fsm_asset_size}</td>
 <td style="width: 17%;"><span class="lbl">TYPE:</span> ${record.custrecord_bc_vr_prev_type}</td>
 <td style="width: 18%;"><span class="lbl">DATE:</span> ${record.custrecord_bc_vr_prev_date?has_content?then(record.custrecord_bc_vr_prev_date?string["MMM d, yyyy"], "")}</td>
 <td style="width: 25%;"><span class="lbl">Set Pressure:</span> ${record.custrecord_bc_vr_pretest_set}</td>
 </tr>
 <tr>
-<td><span class="lbl">TYPE:</span> ${record.custrecord_bc_vr_type}</td>
+<td><span class="lbl">TYPE:</span> ${record.custrecord_bc_fsm_vr_valve.custrecord_nx_asset_type}</td>
 <td><span class="lbl">SET:</span> ${record.custrecord_bc_vr_set}</td>
 <td><span class="lbl">SET:</span> ${record.custrecord_bc_vr_prev_set}</td>
 <td><span class="lbl">CDTP:</span> ${record.custrecord_bc_vr_prev_cdtp}</td>
 <td><span class="lbl">Tightness:</span> ${record.custrecord_bc_vr_pretest_tightness}</td>
 </tr>
 <tr>
-<td><span class="lbl">S/N:</span> ${record.custrecord_bc_vr_serial}</td>
+<td><span class="lbl">S/N:</span> ${record.custrecord_bc_fsm_vr_valve.custrecord_nx_asset_serial}</td>
 <td><span class="lbl">CDTP:</span> ${record.custrecord_bc_vr_cdtp}</td>
 <td><span class="lbl">CAP:</span> ${record.custrecord_bc_vr_prev_cap}</td>
 <td><span class="lbl">VR CO:</span> ${record.custrecord_bc_vr_prev_vrco}</td>
