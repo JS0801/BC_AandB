@@ -374,6 +374,7 @@ define([
         }
         to.setValue({ fieldId: 'location', value: fromLocId });
         to.setValue({ fieldId: 'transferlocation', value: toLocId });
+        to.setValue({ fieldId: 'incoterm', value: 1 });
         to.setValue({ fieldId: 'memo', value: 'Auto-created from SO #' + (soTranId || soId) });
 
         // Use firmed so committed qty behavior is predictable
