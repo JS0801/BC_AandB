@@ -3,11 +3,15 @@
  * @NScriptType ClientScript
  * @NModuleScope Public
  *
- * BC SO Sourcing Client Script (button-driven picker)
+ * BC SO Sourcing Client Script (DOM-injected line button)
  *
- * Picker no longer auto-opens on method change. Instead, a "Pick Location"
- * button renders in the custcol_bc_pick_btn inline-HTML column on lines where
- * Sourcing Method = Transfer Order. User clicks the button to open the picker.
+ * Inline HTML transaction column fields don't render in edit mode on the item
+ * sublist (NetSuite limitation). To get a line-level "Pick Location" button
+ * working, we inject buttons directly into the sublist DOM and use a
+ * MutationObserver to keep them in sync as the user adds/edits/removes lines.
+ *
+ * Custom list internal IDs (customlist_bc_sourcing_method):
+ *   1 = Stock, 2 = PO, 3 = Transfer Order
  */
 define(['N/url', 'N/currentRecord', 'N/ui/dialog'], function (url, currentRecord, dialog) {
 
@@ -22,14 +26,19 @@ define(['N/url', 'N/currentRecord', 'N/ui/dialog'], function (url, currentRecord
         QTY_TRANSFER: 'custcol_bc_qty_to_transfer',
         LINKED_TO:    'custcol_bc_linked_to',
         PROCESSED:    'custcol_bc_sourcing_processed',
-        ERROR:        'custcol_bc_sourcing_error',
-        PICK_BTN:     'custcol_bc_pick_btn'
+        ERROR:        'custcol_bc_sourcing_error'
     };
 
     var PICKER_SCRIPT_ID = 'customscript_bc_sl_inventory_picker';
     var PICKER_DEPLOY_ID = 'customdeploy_bc_sl_inventory_picker';
 
+    // CSS class we attach to injected buttons so we can find/replace them
+    var BTN_CLASS = 'bc-pick-loc-btn';
+    var BTN_CELL_CLASS = 'bc-pick-loc-cell';
+
     var pendingPickerLineIndex = null;
+    var observer = null;
+    var injectTimer = null;
 
     // ---------------- Logging ----------------
 
@@ -38,7 +47,7 @@ define(['N/url', 'N/currentRecord', 'N/ui/dialog'], function (url, currentRecord
         try { console.log('[BC SO Sourcing]', title, obj || ''); } catch (e) {}
     }
 
-    function err(title, e, extra) {
+    function logErr(title, e, extra) {
         try { console.error('[BC SO Sourcing]', title, e, extra || ''); } catch (x) {}
     }
 
@@ -47,13 +56,13 @@ define(['N/url', 'N/currentRecord', 'N/ui/dialog'], function (url, currentRecord
     function pageInit(context) {
         dbg('pageInit', { mode: context && context.mode });
 
-        // Callback the Suitelet popup invokes directly
+        // Popup callback
         window.bcPickerCallback = function (payload) {
             dbg('bcPickerCallback', payload);
             handlePickerSelection(payload);
         };
 
-        // Global function the line button calls
+        // Button onclick target
         window.bcOpenPicker = function (lineIndex) {
             dbg('bcOpenPicker:click', { lineIndex: lineIndex });
             try {
@@ -63,7 +72,7 @@ define(['N/url', 'N/currentRecord', 'N/ui/dialog'], function (url, currentRecord
                     openPicker(rec);
                 }
             } catch (e) {
-                err('bcOpenPicker failed', e);
+                logErr('bcOpenPicker failed', e);
             }
         };
 
@@ -73,15 +82,10 @@ define(['N/url', 'N/currentRecord', 'N/ui/dialog'], function (url, currentRecord
                 handlePickerSelection(event.data);
             }
         }, false);
-    }
 
-    function lineInit(context) {
-        if (context.sublistId !== SUBLIST) return;
-        try {
-            renderPickButton(context.currentRecord);
-        } catch (e) {
-            err('lineInit failed', e);
-        }
+        // Initial inject + start observer
+        scheduleInject(300);
+        startObserver();
     }
 
     function fieldChanged(context) {
@@ -97,14 +101,20 @@ define(['N/url', 'N/currentRecord', 'N/ui/dialog'], function (url, currentRecord
 
             if (context.fieldId === FIELD.METHOD) {
                 handleMethodChange(rec);
-                renderPickButton(rec);
+                scheduleInject(150); // method change → button needs to appear/disappear
             } else if (context.fieldId === FIELD.QTY_TRANSFER) {
                 handleQtyChange(rec);
-            } else if (context.fieldId === 'item' || context.fieldId === 'quantity') {
-                renderPickButton(rec);
             }
         } catch (e) {
-            err('fieldChanged failed', e, { field: context.fieldId });
+            logErr('fieldChanged failed', e, { field: context.fieldId });
+        }
+    }
+
+    function postSourcing(context) {
+        // After NetSuite finishes sourcing a field (e.g., item lookup populating
+        // defaults), re-inject in case the sublist redrew.
+        if (context.sublistId === SUBLIST) {
+            scheduleInject(150);
         }
     }
 
@@ -136,8 +146,22 @@ define(['N/url', 'N/currentRecord', 'N/ui/dialog'], function (url, currentRecord
             }
             return true;
         } catch (e) {
-            err('validateLine failed', e);
+            logErr('validateLine failed', e);
             return true;
+        }
+    }
+
+    // After a line is added, removed, or the user moves to a different line,
+    // re-inject so the buttons stay in sync.
+    function postSourcingFinished(ctx) { scheduleInject(100); }
+    function sublistChanged(context) {
+        if (context && context.sublistId === SUBLIST) {
+            scheduleInject(100);
+        }
+    }
+    function lineInit(context) {
+        if (context && context.sublistId === SUBLIST) {
+            scheduleInject(100);
         }
     }
 
@@ -160,7 +184,6 @@ define(['N/url', 'N/currentRecord', 'N/ui/dialog'], function (url, currentRecord
                     });
                 }
             }
-            // No auto-open. User clicks the Pick Location button on the line.
         } else {
             rec.setCurrentSublistValue({ sublistId: SUBLIST, fieldId: FIELD.FROM_LOC, value: '', ignoreFieldChange: true });
             rec.setCurrentSublistValue({ sublistId: SUBLIST, fieldId: FIELD.QTY_TRANSFER, value: '', ignoreFieldChange: true });
@@ -189,23 +212,24 @@ define(['N/url', 'N/currentRecord', 'N/ui/dialog'], function (url, currentRecord
             });
             pendingPickerLineIndex = null;
             dbg('handlePickerSelection:done', { locId: payload.locId });
+            scheduleInject(100);
         } catch (e) {
-            err('handlePickerSelection failed', e, { payload: payload });
+            logErr('handlePickerSelection failed', e, { payload: payload });
         }
     }
 
     // ---------------- Picker invocation ----------------
 
     function canOpenPicker(rec) {
+        var method = String(rec.getCurrentSublistValue({ sublistId: SUBLIST, fieldId: FIELD.METHOD }) || '');
         var item = rec.getCurrentSublistValue({ sublistId: SUBLIST, fieldId: 'item' });
         var qty = parseFloat(rec.getCurrentSublistValue({ sublistId: SUBLIST, fieldId: FIELD.QTY_TRANSFER }) || '0');
         var destLoc = rec.getCurrentSublistValue({ sublistId: SUBLIST, fieldId: 'location' })
                    || rec.getValue({ fieldId: 'location' });
         var subsidiary = rec.getValue({ fieldId: 'subsidiary' });
-        var method = String(rec.getCurrentSublistValue({ sublistId: SUBLIST, fieldId: FIELD.METHOD }) || '');
 
         if (method !== SOURCING_METHOD_TO) {
-            dialog.alert({ title: 'Set Sourcing Method', message: 'Change Sourcing Method to "Transfer Order" before picking a source location.' });
+            dialog.alert({ title: 'Set Sourcing Method', message: 'Change Sourcing Method on this line to "Transfer Order" first.' });
             return false;
         }
         if (!item) {
@@ -262,32 +286,124 @@ define(['N/url', 'N/currentRecord', 'N/ui/dialog'], function (url, currentRecord
                 });
             }
         } catch (e) {
-            err('openPicker failed', e);
+            logErr('openPicker failed', e);
         }
     }
 
-    // ---------------- Button rendering ----------------
+    // ---------------- DOM injection ----------------
 
-    function renderPickButton(rec) {
+    /**
+     * Debounce wrapper around injectButtons. NetSuite redraws the sublist
+     * frequently; we don't want to thrash.
+     */
+    function scheduleInject(delayMs) {
+        if (injectTimer) clearTimeout(injectTimer);
+        injectTimer = setTimeout(function () {
+            injectTimer = null;
+            try { injectButtons(); } catch (e) { logErr('injectButtons failed', e); }
+        }, delayMs || 200);
+    }
+
+    /**
+     * Walk the visible item sublist rows and ensure each row has a button
+     * (when method=TO) or no button (otherwise).
+     */
+    function injectButtons() {
+        // NetSuite renders the item sublist as a table with id="item_splits"
+        // and row IDs like "item_row_1", "item_row_2", ...
+        var table = document.getElementById('item_splits');
+        if (!table) {
+            dbg('injectButtons:noTable');
+            return;
+        }
+
+        var rec;
+        try { rec = currentRecord.get(); } catch (e) { return; }
+
+        // The item sublist column for method is identified by the field machine name.
+        // Native NetSuite gives column cells a class like "input_columnN" or with the
+        // field id in the cell. Easiest reliable path: read line values via the
+        // record API and locate rows by index.
+        var lineCount;
         try {
-            var method = String(rec.getCurrentSublistValue({ sublistId: SUBLIST, fieldId: FIELD.METHOD }) || '');
-            var lineIndex = rec.getCurrentSublistIndex({ sublistId: SUBLIST });
+            lineCount = rec.getLineCount({ sublistId: SUBLIST });
+        } catch (e) {
+            return;
+        }
 
-            var html = '';
-            if (method === SOURCING_METHOD_TO && !isLineLocked(rec)) {
-                html = '<button type="button" ' +
-                       'style="padding:3px 10px;font-size:12px;cursor:pointer;background:#125ab2;color:#fff;border:1px solid #0e4a94;border-radius:3px;" ' +
-                       'onclick="window.bcOpenPicker(' + lineIndex + ')">Pick Location</button>';
+        // Find or create a header cell label for our column (visual nicety)
+        ensureHeaderCell(table);
+
+        for (var i = 0; i < lineCount; i++) {
+            var row = document.getElementById('item_row_' + (i + 1));
+            if (!row) continue;
+
+            var method = String(rec.getSublistValue({ sublistId: SUBLIST, fieldId: FIELD.METHOD, line: i }) || '');
+            var processed = rec.getSublistValue({ sublistId: SUBLIST, fieldId: FIELD.PROCESSED, line: i });
+            var linkedTo = rec.getSublistValue({ sublistId: SUBLIST, fieldId: FIELD.LINKED_TO, line: i });
+            var locked = !!processed || !!linkedTo;
+
+            var shouldShow = (method === SOURCING_METHOD_TO) && !locked;
+
+            // Find or create our cell at the end of the row
+            var cell = row.querySelector('td.' + BTN_CELL_CLASS);
+            if (!cell) {
+                cell = document.createElement('td');
+                cell.className = BTN_CELL_CLASS;
+                cell.style.padding = '2px 6px';
+                cell.style.whiteSpace = 'nowrap';
+                row.appendChild(cell);
             }
 
-            rec.setCurrentSublistValue({
-                sublistId: SUBLIST,
-                fieldId: FIELD.PICK_BTN,
-                value: html,
-                ignoreFieldChange: true
+            if (shouldShow) {
+                cell.innerHTML = '<button type="button" class="' + BTN_CLASS + '" ' +
+                    'style="padding:3px 10px;font-size:11px;cursor:pointer;background:#125ab2;color:#fff;border:1px solid #0e4a94;border-radius:3px;" ' +
+                    'onclick="window.bcOpenPicker(' + i + ');return false;">Pick Location</button>';
+            } else {
+                cell.innerHTML = '';
+            }
+        }
+
+        dbg('injectButtons:done', { lineCount: lineCount });
+    }
+
+    function ensureHeaderCell(table) {
+        var thead = table.querySelector('thead');
+        if (!thead) return;
+        var headerRow = thead.querySelector('tr');
+        if (!headerRow) return;
+        if (headerRow.querySelector('th.' + BTN_CELL_CLASS)) return;
+
+        var th = document.createElement('th');
+        th.className = BTN_CELL_CLASS;
+        th.textContent = 'Pick';
+        th.style.padding = '2px 6px';
+        headerRow.appendChild(th);
+    }
+
+    /**
+     * MutationObserver: NetSuite redraws the sublist table whenever the user
+     * adds/edits/removes a line. Re-inject buttons after each redraw.
+     */
+    function startObserver() {
+        var target = document.getElementById('item_splits') ||
+                     document.getElementById('tbl_item') ||
+                     document.body;
+
+        if (!target || observer) return;
+
+        try {
+            observer = new MutationObserver(function (mutations) {
+                // Only re-inject if structural changes happened (rows added/removed)
+                var structural = mutations.some(function (m) {
+                    return m.type === 'childList' && (m.addedNodes.length || m.removedNodes.length);
+                });
+                if (structural) scheduleInject(150);
             });
+            observer.observe(target, { childList: true, subtree: true });
+            dbg('observer:started');
         } catch (e) {
-            err('renderPickButton failed', e);
+            logErr('observer:failed', e);
         }
     }
 
@@ -307,6 +423,8 @@ define(['N/url', 'N/currentRecord', 'N/ui/dialog'], function (url, currentRecord
         pageInit: pageInit,
         lineInit: lineInit,
         fieldChanged: fieldChanged,
+        postSourcing: postSourcing,
+        sublistChanged: sublistChanged,
         validateLine: validateLine
     };
 });
