@@ -128,6 +128,7 @@ define(['N/url', 'N/currentRecord', 'N/ui/dialog', 'N/log'], function (url, curr
      */
     function fieldChanged(context) {
         try {
+            log.debug('sublist', context.sublistId)
             if (context.sublistId !== SUBLIST) return;
 
             var rec = context.currentRecord;
