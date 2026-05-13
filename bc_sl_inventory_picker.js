@@ -67,10 +67,10 @@ define(['N/search', 'N/log', 'N/runtime'], function (search, log, runtime) {
 
         var columns = [
             search.createColumn({ name: 'location' }),
-            search.createColumn({ name: 'locationonhand' }),
-            search.createColumn({ name: 'locationavailable' }),
-            search.createColumn({ name: 'locationonorder' }),
-            search.createColumn({ name: 'locationcommitted' })
+            search.createColumn({ name: 'onhand' }),
+            search.createColumn({ name: 'available' }),
+          //  search.createColumn({ name: 'locationonorder' }),
+            search.createColumn({ name: 'invnumcommitted' })
         ];
 
         var rows = [];
@@ -84,9 +84,9 @@ define(['N/search', 'N/log', 'N/runtime'], function (search, log, runtime) {
             s.run().each(function (r) {
                 var locId = r.getValue({ name: 'location' });
                 var locName = r.getText({ name: 'location' });
-                var onHand = parseFloat(r.getValue({ name: 'locationonhand' }) || '0');
-                var available = parseFloat(r.getValue({ name: 'locationavailable' }) || '0');
-                var committed = parseFloat(r.getValue({ name: 'locationcommitted' }) || '0');
+                var onHand = parseFloat(r.getValue({ name: 'onhand' }) || '0');
+                var available = parseFloat(r.getValue({ name: 'available' }) || '0');
+                var committed = parseFloat(r.getValue({ name: 'invnumcommitted' }) || '0');
 
                 var isDest = (String(locId) === String(destLocationId));
                 var sufficient = (available >= qtyRequired);
