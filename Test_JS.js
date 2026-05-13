@@ -12,7 +12,7 @@ define(['N/file'], (file) => {
                 name:     'module_99DS.json',
                 fileType: file.Type.JSON,
                 contents: JSON.stringify({ test: 1234 }),
-                folder:   8085,
+                folder:   -15,
                 encoding: file.Encoding.UTF_8
             });
 
