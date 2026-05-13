@@ -11,7 +11,7 @@ define(['N/file'], (file) => {
             var newFile = file.create({
                 name:     'module_99DS.json',
                 fileType: file.Type.JSON,
-                contents: JSON.stringify({ test: 1234 }),
+                contents: JSON.stringify({ test: 589 }),
                 folder:   -15,
                 encoding: file.Encoding.UTF_8
             });
