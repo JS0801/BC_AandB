@@ -92,17 +92,15 @@ define(['N/search', 'N/log', 'N/record'], function (search, log, record) {
             'AND',
             ['location.subsidiary', 'anyof', subsidiaryId],
             'AND',
-            ['location.isinactive', 'is', 'F'],
-            'AND',
-            ['location.includeinsupplyplanning', 'is', 'T']
+            ['location.isinactive', 'is', 'F']
         ];
 
         var columns = [
             search.createColumn({ name: 'location' }),
-            search.createColumn({ name: 'locationonhand' }),
-            search.createColumn({ name: 'locationavailable' }),
-            search.createColumn({ name: 'locationonorder' }),
-            search.createColumn({ name: 'locationcommitted' })
+            search.createColumn({ name: 'onhand' }),
+            search.createColumn({ name: 'available' }),
+          //  search.createColumn({ name: 'locationonorder' }),
+            search.createColumn({ name: 'invnumcommitted' })
         ];
 
         var rows = [];
@@ -111,10 +109,10 @@ define(['N/search', 'N/log', 'N/record'], function (search, log, record) {
         s.run().each(function (r) {
             var locId = r.getValue({ name: 'location' });
             var locName = r.getText({ name: 'location' });
-            var onHand = parseFloat(r.getValue({ name: 'locationonhand' }) || '0');
-            var available = parseFloat(r.getValue({ name: 'locationavailable' }) || '0');
-            var onOrder = parseFloat(r.getValue({ name: 'locationonorder' }) || '0');
-            var committed = parseFloat(r.getValue({ name: 'locationcommitted' }) || '0');
+            var onHand = parseFloat(r.getValue({ name: 'onhand' }) || '0');
+            var available = parseFloat(r.getValue({ name: 'available' }) || '0');
+          //  var onOrder = parseFloat(r.getValue({ name: 'locationonorder' }) || '0');
+            var committed = parseFloat(r.getValue({ name: 'invnumcommitted' }) || '0');
 
             var isDest = (String(locId) === String(destLocationId));
             var sufficient = (available >= qtyRequired);
@@ -134,7 +132,7 @@ define(['N/search', 'N/log', 'N/record'], function (search, log, record) {
                 locName: locName,
                 onHand: onHand,
                 available: available,
-                onOrder: onOrder,
+             //   onOrder: onOrder,
                 committed: committed,
                 status: status,
                 disabled: disabled
@@ -180,7 +178,6 @@ define(['N/search', 'N/log', 'N/record'], function (search, log, record) {
                 '<td class="num">' + formatNum(r.onHand) + '</td>',
                 '<td class="' + availClass + '">' + formatNum(r.available) + '</td>',
                 '<td class="num">' + formatNum(r.committed) + '</td>',
-                '<td class="num">' + formatNum(r.onOrder) + '</td>',
                 '<td class="status ' + (r.disabled ? 'status-disabled' : 'status-ok') + '">' + escapeHtml(r.status) + '</td>',
                 '</tr>'
             ].join('');
@@ -253,7 +250,6 @@ define(['N/search', 'N/log', 'N/record'], function (search, log, record) {
             '        <th class="num">Qty On Hand</th>',
             '        <th class="num">Qty Available</th>',
             '        <th class="num">Qty Committed</th>',
-            '        <th class="num">Qty On Order</th>',
             '        <th>Status</th>',
             '      </tr></thead>',
             '      <tbody>', rowHtml, '</tbody>',
