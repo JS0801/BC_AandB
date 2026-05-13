@@ -60,9 +60,9 @@ define(['N/search', 'N/log', 'N/runtime'], function (search, log, runtime) {
             'AND',
             ['location.subsidiary', 'anyof', subsidiaryId],
             'AND',
-            ['location.isinactive', 'is', 'F'],
-            'AND',
-            ['location.includeinsupplyplanning', 'is', 'T']
+            ['location.isinactive', 'is', 'F']
+            // 'AND',
+            // ['location.includeinsupplyplanning', 'is', 'T']
         ];
 
         var columns = [
