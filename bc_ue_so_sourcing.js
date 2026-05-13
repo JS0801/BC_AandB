@@ -342,11 +342,11 @@ define([
                         'AND',
                         ['location', 'anyof', p.location]
                     ],
-                    columns: [search.createColumn({ name: 'locationavailable' })]
+                    columns: [search.createColumn({ name: 'available' })]
                 });
                 var avail = 0;
                 s.run().each(function (r) {
-                    avail = parseFloat(r.getValue({ name: 'locationavailable' }) || '0');
+                    avail = parseFloat(r.getValue({ name: 'available' }) || '0');
                     return false; // first row only
                 });
                 availMap[p.item + '|' + p.location] = avail;
