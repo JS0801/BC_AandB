@@ -3,26 +3,16 @@
  * @NScriptType UserEventScript
  * @NModuleScope Public
  *
- * BC SO Sourcing User Event (with lock-state enforcement)
+ * BC SO Sourcing User Event (hardened)
  *
- * beforeSubmit:
- *   - Validate TO-sourced lines (item type, From Location, conflicts)
- *   - Enforce lock restrictions on lines that were locked in the OLD record:
- *     • cannot delete the line
- *     • cannot change item, quantity, line location, sourcing method,
- *       source from location, or qty to transfer
- *     • UNLESS the line is being unlocked in the same save (Admin correction)
- *   - Enforce header restrictions when any line currently has a linked TO:
- *     • cannot change subsidiary
- *     • cannot change header location
- *   - Block SO close/cancel (status transition to Closed/Cancelled) when any
- *     line has an active linked TO
- *   - On COPY: clear processed/linked_to/error so the engine reprocesses
- *
- * afterSubmit:
- *   - Sourcing engine: status=Pending Fulfillment, UI/Workflow context only.
- *     Recheck availability, group by source location, create one TO per group,
- *     write back linked_to + processed in a single SO save.
+ * Changes from prior version:
+ *   - Close/cancel detection: now triggers on status transition into ANY
+ *     closed-ish status on CREATE/EDIT/XEDIT, not just cancel/close types
+ *   - Copy detection: handles both record copy (T.COPY) and line copy
+ *     (lines with processed=true / linked_to populated but no database line ID
+ *     = newly inserted from a Copy Line action — wipe them)
+ *   - Stronger linkage-clear guard: validates that "unlocking" a line in the
+ *     same save requires clearing BOTH linked_to AND processed
  */
 define([
     'N/record',
@@ -47,28 +37,27 @@ define([
 
     var ALLOWED_ITEM_TYPES = { 'InvtPart': true, 'Assembly': true };
 
+    // Active TO statuses (block SO close/cancel when any line has one)
     var ACTIVE_TO_STATUSES = {
-        'TrnfrOrd:A': true,  // Pending Approval
-        'TrnfrOrd:B': true,  // Pending Fulfillment
-        'TrnfrOrd:D': true,  // Partially Fulfilled
-        'TrnfrOrd:E': true,  // Pending Receipt
-        'TrnfrOrd:F': true,  // Partially Received
-        'TrnfrOrd:G': true   // Received (treat as active for close/cancel — inventory moved)
-        // Cancelled (H) and Closed (?) intentionally not listed = inactive
+        'TrnfrOrd:A': true,
+        'TrnfrOrd:B': true,
+        'TrnfrOrd:D': true,
+        'TrnfrOrd:E': true,
+        'TrnfrOrd:F': true,
+        'TrnfrOrd:G': true
+    };
+
+    // SO "closed-ish" statuses — blocks transition into these when active TOs exist
+    var SO_CLOSED_STATUSES = {
+        'F': true, 'closedOrder': true,
+        'H': true, 'cancelled': true,
+        'closed': true,
+        'SalesOrd:F': true, 'SalesOrd:H': true
     };
 
     var SO_STATUS_PENDING_FULFILLMENT_TEXT = 'pendingFulfillment';
     var SO_STATUS_PENDING_FULFILLMENT_CODE = 'B';
 
-    // SO statuses that count as "closed" — for blocking close/cancel
-    var SO_CLOSED_STATUSES = {
-        'F': true,           // Closed
-        'closedOrder': true, // text variant
-        'H': true,           // Cancelled (varies by account)
-        'cancelled': true
-    };
-
-    // Fields on a locked line that cannot change without Admin unlock
     var LOCKED_FIELD_GUARDS = [
         { field: 'item',           label: 'Item' },
         { field: 'quantity',       label: 'Quantity' },
@@ -81,48 +70,49 @@ define([
     // ---------- Entry points ----------
 
     function beforeSubmit(context) {
-        try {
-            var T = context.UserEventType;
-            var rec = context.newRecord;
-            var oldRec = context.oldRecord;
+        var T = context.UserEventType;
+        var rec = context.newRecord;
+        var oldRec = context.oldRecord;
 
-            // DELETE: block if active linked TOs exist on this SO
-            if (context.type === T.DELETE) {
-                blockDeleteIfActiveLinkedTOs(oldRec || rec);
-                return;
+        log.debug('beforeSubmit:start', { type: context.type, hasOld: !!oldRec });
+
+        // ----- DELETE -----
+        if (context.type === T.DELETE) {
+            blockDeleteIfActiveLinkedTOs(oldRec || rec);
+            return;
+        }
+
+        // ----- COPY (record-level "Make Copy") -----
+        if (context.type === T.COPY) {
+            log.debug('beforeSubmit:COPY', { soId: rec.id });
+            cleanupAllLines(rec);
+            validateAllLines(rec);
+            return;
+        }
+
+        // ----- CREATE / EDIT / XEDIT -----
+        if (context.type === T.CREATE || context.type === T.EDIT || context.type === T.XEDIT) {
+
+            // Detect line-level copies (Copy Line button) — newly inserted lines
+            // that have processed=true or linked_to set from the copy source.
+            cleanupCopiedLines(rec);
+
+            // Per-line validation
+            validateAllLines(rec);
+
+            if (oldRec) {
+                enforceLockRestrictions(oldRec, rec);
+                enforceHeaderRestrictions(oldRec, rec);
+                blockCloseCancelIfActiveLinkedTOs(oldRec, rec);
             }
-
-            // COPY: clear processed/linked_to/error so the new SO can re-source
-            if (context.type === T.COPY) {
-                cleanupCopiedLines(rec);
-                // Still validate the resulting lines
-                validateAllLines(rec);
-                return;
-            }
-
-            // CREATE / EDIT / XEDIT
-            if (context.type === T.CREATE || context.type === T.EDIT || context.type === T.XEDIT) {
-
-                // 1. Per-line validation
-                validateAllLines(rec);
-
-                // 2. Lock restrictions (only meaningful if we have an old record)
-                if (oldRec) {
-                    enforceLockRestrictions(oldRec, rec);
-                    enforceHeaderRestrictions(oldRec, rec);
-                    blockCloseCancelIfActiveLinkedTOs(oldRec, rec);
-                }
-            }
-        } catch (e) {
-            // Re-throw so the save is actually blocked
-            throw e;
         }
     }
 
     function afterSubmit(context) {
         try {
             var T = context.UserEventType;
-            if (context.type !== T.CREATE && context.type !== T.EDIT && context.type !== T.XEDIT) return;
+            if (context.type !== T.CREATE && context.type !== T.EDIT &&
+                context.type !== T.XEDIT && context.type !== T.COPY) return;
 
             var ctxType = runtime.executionContext;
             var allowed = [runtime.ContextType.USER_INTERFACE, runtime.ContextType.WORKFLOW];
@@ -135,7 +125,8 @@ define([
             var so = record.load({ type: record.Type.SALES_ORDER, id: soId, isDynamic: false });
 
             var status = so.getValue({ fieldId: 'orderstatus' }) || so.getValue({ fieldId: 'status' });
-            if (status !== SO_STATUS_PENDING_FULFILLMENT_TEXT && status !== SO_STATUS_PENDING_FULFILLMENT_CODE) {
+            if (status !== SO_STATUS_PENDING_FULFILLMENT_TEXT &&
+                status !== SO_STATUS_PENDING_FULFILLMENT_CODE) {
                 log.debug('afterSubmit:skipStatus', { status: status });
                 return;
             }
@@ -143,11 +134,10 @@ define([
             runSourcingEngine(so);
         } catch (e) {
             log.error('afterSubmit failed', e);
-            // Do not re-throw — afterSubmit failures shouldn't undo the SO save
         }
     }
 
-    // ---------- Per-line validation (existing) ----------
+    // ---------- Validation ----------
 
     function validateAllLines(rec) {
         var lineCount = rec.getLineCount({ sublistId: SUBLIST });
@@ -168,7 +158,7 @@ define([
 
         var itemType = rec.getSublistValue({ sublistId: SUBLIST, fieldId: 'itemtype', line: lineIdx });
         if (itemType && !ALLOWED_ITEM_TYPES[itemType]) {
-            throw new Error('Line ' + lineNum + ': item type "' + itemType + '" is not supported for Transfer Order sourcing. Only Inventory and Assembly items are supported.');
+            throw new Error('Line ' + lineNum + ': item type "' + itemType + '" not supported for Transfer Order sourcing. Only Inventory and Assembly items are supported.');
         }
 
         var fromLoc = rec.getSublistValue({ sublistId: SUBLIST, fieldId: FIELD.FROM_LOC, line: lineIdx });
@@ -192,7 +182,7 @@ define([
         }
     }
 
-    // ---------- Lock restrictions (NEW) ----------
+    // ---------- Lock enforcement ----------
 
     function enforceLockRestrictions(oldRec, newRec) {
         var oldLocked = buildLockedLineMap(oldRec);
@@ -204,22 +194,29 @@ define([
             var oldLine = oldLocked[lineId];
             var newIdx = newLineMap[lineId];
 
-            // ----- Deletion check -----
+            // Deleted?
             if (newIdx === undefined || newIdx === null) {
                 throw new Error('Cannot delete line ' + oldLine.lineNum +
                     ': a Transfer Order is linked to this line. To remove the line, an Administrator must first cancel the linked TO and clear the Linked TO, Sourcing Processed, and Sourcing Error fields.');
             }
 
-            // ----- Is the line still locked in newRec? -----
             var newProcessed = newRec.getSublistValue({ sublistId: SUBLIST, fieldId: FIELD.PROCESSED, line: newIdx });
             var newLinkedTo = newRec.getSublistValue({ sublistId: SUBLIST, fieldId: FIELD.LINKED_TO, line: newIdx });
             var stillLocked = !!newProcessed || !!newLinkedTo;
 
-            // If Admin unlocked the line (cleared linked_to + processed), allow all field changes.
-            // This is the Admin correction flow.
+            // Admin unlock = both fields cleared. Allow field changes.
             if (!stillLocked) return;
 
-            // ----- Field change check -----
+            // Partial unlock attempt (cleared one but not the other)
+            var oldProcessed = oldLine.values[FIELD.PROCESSED];
+            var oldLinkedTo = oldLine.values[FIELD.LINKED_TO];
+            var partialClear = (oldProcessed && !newProcessed && newLinkedTo) ||
+                               (oldLinkedTo && !newLinkedTo && newProcessed);
+            if (partialClear) {
+                throw new Error('Line ' + oldLine.lineNum + ': to unlock, clear BOTH the Linked Transfer Order AND the Sourcing Processed flag. Partial clearing is not allowed.');
+            }
+
+            // Field change check
             for (var k = 0; k < LOCKED_FIELD_GUARDS.length; k++) {
                 var guard = LOCKED_FIELD_GUARDS[k];
                 var oldVal = oldLine.values[guard.field];
@@ -227,13 +224,11 @@ define([
 
                 if (String(oldVal == null ? '' : oldVal) !== String(newVal == null ? '' : newVal)) {
                     throw new Error('Cannot change "' + guard.label + '" on line ' + oldLine.lineNum +
-                        ': a Transfer Order is linked to this line. To modify, an Administrator must first cancel the linked TO and clear the Linked TO, Sourcing Processed, and Sourcing Error fields.');
+                        ': a Transfer Order is linked to this line. To modify, an Administrator must first cancel the linked TO and clear the Linked TO and Sourcing Processed fields.');
                 }
             }
         });
     }
-
-    // ---------- Header restrictions (NEW) ----------
 
     function enforceHeaderRestrictions(oldRec, newRec) {
         if (!anyLinkedTOsInRecord(newRec)) return;
@@ -251,26 +246,63 @@ define([
         }
     }
 
-    // ---------- Close/Cancel block ----------
+    // ---------- Close/cancel block (hardened) ----------
 
     function blockCloseCancelIfActiveLinkedTOs(oldRec, newRec) {
         var oldStatus = String(oldRec.getValue({ fieldId: 'orderstatus' }) || oldRec.getValue({ fieldId: 'status' }) || '');
         var newStatus = String(newRec.getValue({ fieldId: 'orderstatus' }) || newRec.getValue({ fieldId: 'status' }) || '');
 
-        // Only check on transitions into Closed/Cancelled
-        if (oldStatus === newStatus) return;
-        if (!SO_CLOSED_STATUSES[newStatus]) return;
+        log.debug('closeCheck:statuses', { oldStatus: oldStatus, newStatus: newStatus });
 
-        var blockingLines = getActiveLinkedTOLines(newRec);
-        if (blockingLines.length) {
-            throw new Error('Cannot close/cancel this SO: the following lines have active Transfer Orders that must be cancelled or operationally reversed first: ' + blockingLines.join('; '));
+        // Check header-level status transition into closed-ish
+        var headerClosed = (oldStatus !== newStatus) && SO_CLOSED_STATUSES[newStatus];
+
+        // Check line-level: any locked line that got its "isclosed" checkbox flipped to T
+        var lineClosed = checkAnyLockedLineClosing(oldRec, newRec);
+
+        if (headerClosed || lineClosed) {
+            var blockingLines = getActiveLinkedTOLines(newRec);
+            if (blockingLines.length) {
+                throw new Error('Cannot close/cancel: the following lines have active Transfer Orders that must be cancelled or operationally reversed first: ' + blockingLines.join('; '));
+            }
         }
+    }
+
+    /**
+     * Detect closure via line-level isclosed flag flipping to true on a locked line.
+     */
+    function checkAnyLockedLineClosing(oldRec, newRec) {
+        try {
+            var oldMap = buildLockedLineMap(oldRec);
+            var newLineMap = buildLineIdMap(newRec);
+
+            for (var lineId in oldMap) {
+                if (!oldMap.hasOwnProperty(lineId)) continue;
+                var newIdx = newLineMap[lineId];
+                if (newIdx === undefined) continue;
+
+                var oldClosed = oldRec.getSublistValue({ sublistId: SUBLIST, fieldId: 'isclosed', line: indexOfLineId(oldRec, lineId) });
+                var newClosed = newRec.getSublistValue({ sublistId: SUBLIST, fieldId: 'isclosed', line: newIdx });
+                if (!oldClosed && newClosed) return true;
+            }
+        } catch (e) {
+            log.error('checkAnyLockedLineClosing failed', e);
+        }
+        return false;
+    }
+
+    function indexOfLineId(rec, targetId) {
+        var lineCount = rec.getLineCount({ sublistId: SUBLIST });
+        for (var i = 0; i < lineCount; i++) {
+            if (String(getLineId(rec, i)) === String(targetId)) return i;
+        }
+        return -1;
     }
 
     function blockDeleteIfActiveLinkedTOs(rec) {
         var blockingLines = getActiveLinkedTOLines(rec);
         if (blockingLines.length) {
-            throw new Error('Cannot delete this SO: the following lines have active Transfer Orders: ' + blockingLines.join('; ') + '. An Administrator must cancel or operationally reverse the linked TO(s) first.');
+            throw new Error('Cannot delete this SO: ' + blockingLines.join('; ') + '. An Administrator must cancel or operationally reverse the linked TO(s) first.');
         }
     }
 
@@ -298,9 +330,12 @@ define([
         return blocking;
     }
 
-    // ---------- COPY cleanup ----------
+    // ---------- Copy cleanup ----------
 
-    function cleanupCopiedLines(rec) {
+    /**
+     * Record-level COPY: clear everything on every line.
+     */
+    function cleanupAllLines(rec) {
         var lineCount = rec.getLineCount({ sublistId: SUBLIST });
         for (var i = 0; i < lineCount; i++) {
             rec.setSublistValue({ sublistId: SUBLIST, fieldId: FIELD.LINKED_TO, line: i, value: '' });
@@ -309,7 +344,37 @@ define([
         }
     }
 
-    // ---------- Sourcing engine (unchanged from working version) ----------
+    /**
+     * Line-level Copy: NetSuite gives copied lines no database `line` ID (it's
+     * a new insert from the user's perspective). If we see a "new" line carrying
+     * processed=true OR a linked_to value, it's a line-copy artifact. Wipe it.
+     *
+     * This catches: Copy Line in sublist, mass duplicate, etc.
+     */
+    function cleanupCopiedLines(rec) {
+        var lineCount = rec.getLineCount({ sublistId: SUBLIST });
+        for (var i = 0; i < lineCount; i++) {
+            var dbLineId = null;
+            try {
+                dbLineId = rec.getSublistValue({ sublistId: SUBLIST, fieldId: 'line', line: i });
+            } catch (e) {}
+
+            // A line without a `line` value is newly inserted in this save.
+            // If it carries processed=true or linked_to, it's a copy artifact.
+            if (!dbLineId) {
+                var processed = rec.getSublistValue({ sublistId: SUBLIST, fieldId: FIELD.PROCESSED, line: i });
+                var linkedTo = rec.getSublistValue({ sublistId: SUBLIST, fieldId: FIELD.LINKED_TO, line: i });
+                if (processed || linkedTo) {
+                    log.audit('cleanupCopiedLines:wipeNewLine', { lineIdx: i });
+                    rec.setSublistValue({ sublistId: SUBLIST, fieldId: FIELD.LINKED_TO, line: i, value: '' });
+                    rec.setSublistValue({ sublistId: SUBLIST, fieldId: FIELD.PROCESSED, line: i, value: false });
+                    rec.setSublistValue({ sublistId: SUBLIST, fieldId: FIELD.ERROR, line: i, value: '' });
+                }
+            }
+        }
+    }
+
+    // ---------- Sourcing engine ----------
 
     function runSourcingEngine(so) {
         var soId = so.id;
@@ -322,7 +387,6 @@ define([
             log.debug('engine:noQualifyingLines', { soId: soId });
             return;
         }
-
         var checked = recheckAvailability(qualifying);
 
         var groups = {};
@@ -335,7 +399,6 @@ define([
 
         var success = [];
         var failed = [];
-
         Object.keys(groups).forEach(function (fromLocId) {
             var grp = groups[fromLocId];
             try {
@@ -349,7 +412,6 @@ define([
         });
 
         writebackResults(soId, success, failed, skipped);
-
         log.audit('engine:done', { soId: soId, success: success.length, failed: failed.length, skipped: skipped.length });
     }
 
@@ -373,10 +435,8 @@ define([
             if (qtyRequired <= 0) continue;
 
             lines.push({
-                lineIdx: i,
-                lineNum: i + 1,
-                item: item,
-                fromLoc: fromLoc,
+                lineIdx: i, lineNum: i + 1,
+                item: item, fromLoc: fromLoc,
                 destLoc: so.getSublistValue({ sublistId: SUBLIST, fieldId: 'location', line: i }) || headerLocation,
                 qtyRequired: qtyRequired,
                 units: so.getSublistValue({ sublistId: SUBLIST, fieldId: 'units', line: i })
@@ -400,11 +460,8 @@ define([
                 var avail = 0;
                 s.run().each(function (r) { avail = parseFloat(r.getValue({ name: 'available' }) || '0'); return false; });
                 availMap[key] = avail;
-            } catch (e) {
-                availMap[key] = 0;
-            }
+            } catch (e) { availMap[key] = 0; }
         });
-
         return lines.map(function (l) {
             var avail = availMap[l.item + '|' + l.fromLoc] || 0;
             if (avail < l.qtyRequired) {
@@ -420,8 +477,8 @@ define([
         if (subsidiary) to.setValue({ fieldId: 'subsidiary', value: subsidiary });
         to.setValue({ fieldId: 'location', value: fromLocId });
         to.setValue({ fieldId: 'transferlocation', value: toLocId });
-        to.setValue({ fieldId: 'memo', value: 'Auto-created from SO #' + (soTranId || soId) });
         to.setValue({ fieldId: 'incoterm', value: 1 });
+        to.setValue({ fieldId: 'memo', value: 'Auto-created from SO #' + (soTranId || soId) });
         try { to.setValue({ fieldId: 'orderstatus', value: 'A' }); } catch (e) {}
 
         groupLines.forEach(function (line) {
@@ -439,7 +496,6 @@ define([
     function writebackResults(soId, success, failed, skipped) {
         if (!success.length && !failed.length && !skipped.length) return;
         var so = record.load({ type: record.Type.SALES_ORDER, id: soId, isDynamic: false });
-
         success.forEach(function (s) {
             so.setSublistValue({ sublistId: SUBLIST, fieldId: FIELD.LINKED_TO, line: s.lineIdx, value: s.toId });
             so.setSublistValue({ sublistId: SUBLIST, fieldId: FIELD.PROCESSED, line: s.lineIdx, value: true });
@@ -451,16 +507,11 @@ define([
         skipped.forEach(function (l) {
             so.setSublistValue({ sublistId: SUBLIST, fieldId: FIELD.ERROR, line: l.lineIdx, value: l.error });
         });
-
         so.save({ ignoreMandatoryFields: true, enableSourcing: false });
     }
 
     // ---------- Diff helpers ----------
 
-    /**
-     * Build a map of line ID -> { lineNum, values: {fieldId -> value} } for
-     * every line that is locked (processed or linked_to populated) in the record.
-     */
     function buildLockedLineMap(rec) {
         var map = {};
         var lineCount = rec.getLineCount({ sublistId: SUBLIST });
@@ -476,15 +527,14 @@ define([
             LOCKED_FIELD_GUARDS.forEach(function (g) {
                 values[g.field] = rec.getSublistValue({ sublistId: SUBLIST, fieldId: g.field, line: i });
             });
+            values[FIELD.PROCESSED] = processed;
+            values[FIELD.LINKED_TO] = linkedTo;
 
             map[id] = { lineNum: i + 1, values: values };
         }
         return map;
     }
 
-    /**
-     * Build a map of line ID -> line index in the record.
-     */
     function buildLineIdMap(rec) {
         var map = {};
         var lineCount = rec.getLineCount({ sublistId: SUBLIST });
@@ -495,10 +545,6 @@ define([
         return map;
     }
 
-    /**
-     * Get a stable identifier for a sublist line. Tries 'line' first
-     * (database line ID), falls back to 'lineuniquekey'.
-     */
     function getLineId(rec, lineIdx) {
         try {
             var id = rec.getSublistValue({ sublistId: SUBLIST, fieldId: 'line', line: lineIdx });
@@ -520,7 +566,7 @@ define([
     }
 
     function hasAny(obj) {
-        for (var k in obj) { if (obj.hasOwnProperty(k)) return true; }
+        for (var k in obj) if (obj.hasOwnProperty(k)) return true;
         return false;
     }
 
