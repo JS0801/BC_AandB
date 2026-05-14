@@ -59,6 +59,7 @@ define(['N/url', 'N/currentRecord', 'N/ui/dialog'], function (url, currentRecord
     // Snapshot of original values for locked lines, taken at pageInit
     var lockedSnapshot = null; // { lineId -> { lineNum, values } }
     var originalHeader = null; // { subsidiary, location, status }
+    var pageMode = null;        // 'create' | 'edit' | 'copy' | 'view'
     var pendingPickerLineIndex = null;
     var observer = null;
     var injectTimer = null;
@@ -71,7 +72,8 @@ define(['N/url', 'N/currentRecord', 'N/ui/dialog'], function (url, currentRecord
     // ---------------- Entry points ----------------
 
     function pageInit(context) {
-        dbg('pageInit', { mode: context && context.mode });
+        pageMode = (context && context.mode) || null;
+        dbg('pageInit', { mode: pageMode });
 
         var rec = currentRecord.get();
 
@@ -93,7 +95,15 @@ define(['N/url', 'N/currentRecord', 'N/ui/dialog'], function (url, currentRecord
         window.bcOpenPicker = function (lineIndex) {
             try {
                 var r = currentRecord.get();
-                r.selectLine({ sublistId: SUBLIST, line: parseInt(lineIndex, 10) });
+                var targetLine = parseInt(lineIndex, 10);
+                var currentLine = -1;
+                var lineCount = 0;
+                try { currentLine = r.getCurrentSublistIndex({ sublistId: SUBLIST }); } catch (ignoreCurrent) {}
+                try { lineCount = r.getLineCount({ sublistId: SUBLIST }); } catch (ignoreCount) {}
+
+                if (currentLine !== targetLine && targetLine < lineCount) {
+                    r.selectLine({ sublistId: SUBLIST, line: targetLine });
+                }
                 if (canOpenPicker(r)) openPicker(r);
             } catch (e) { logErr('bcOpenPicker failed', e); }
         };
@@ -186,20 +196,11 @@ define(['N/url', 'N/currentRecord', 'N/ui/dialog'], function (url, currentRecord
     }
 
     function validateLine(context) {
-        if (context.sublistId !== SUBLIST) return true;
-        try {
-            var rec = context.currentRecord;
-            var method = rec.getCurrentSublistValue({ sublistId: SUBLIST, fieldId: FIELD.METHOD });
-            if (String(method) !== SOURCING_METHOD_TO) return true;
-            if (isLineLocked(rec)) return true;
-
-            var item = rec.getCurrentSublistValue({ sublistId: SUBLIST, fieldId: 'item' });
-            var fromLoc = rec.getCurrentSublistValue({ sublistId: SUBLIST, fieldId: FIELD.FROM_LOC });
-
-            if (!item) { dialog.alert({ title: 'Item Required', message: 'Please select an item before choosing TO sourcing.' }); return false; }
-            if (!fromLoc) { dialog.alert({ title: 'Source Location Required', message: 'Click Pick Location to select a source.' }); return false; }
-            return true;
-        } catch (e) { logErr('validateLine failed', e); return true; }
+        if (context.sublistId === SUBLIST) scheduleInject(INJECT_DEBOUNCE_MS);
+        // Source From Location is intentionally optional. Some TO-method lines
+        // may stay unassigned until a later edit; the sourcing engine skips
+        // those lines until a source is picked.
+        return true;
     }
 
     /**
@@ -318,10 +319,34 @@ define(['N/url', 'N/currentRecord', 'N/ui/dialog'], function (url, currentRecord
         try {
             var rec = currentRecord.get();
             if (pendingPickerLineIndex !== null) {
-                rec.selectLine({ sublistId: SUBLIST, line: pendingPickerLineIndex });
+                var currentLine = -1;
+                var lineCount = 0;
+                try { currentLine = rec.getCurrentSublistIndex({ sublistId: SUBLIST }); } catch (ignoreCurrent) {}
+                try { lineCount = rec.getLineCount({ sublistId: SUBLIST }); } catch (ignoreCount) {}
+                if (currentLine !== pendingPickerLineIndex && pendingPickerLineIndex < lineCount) {
+                    rec.selectLine({ sublistId: SUBLIST, line: pendingPickerLineIndex });
+                }
             }
-            rec.setCurrentSublistValue({ sublistId: SUBLIST, fieldId: FIELD.FROM_LOC, value: payload.locId, ignoreFieldChange: false });
+
+            // Don't write to locked lines — picker would have opened in read-only
+            // mode, but if for any reason it didn't, this is the safety net.
+            var processed = rec.getCurrentSublistValue({ sublistId: SUBLIST, fieldId: FIELD.PROCESSED });
+            var linkedTo = rec.getCurrentSublistValue({ sublistId: SUBLIST, fieldId: FIELD.LINKED_TO });
+            if (processed || linkedTo) {
+                dbg('handlePickerSelection:skipLocked');
+                pendingPickerLineIndex = null;
+                return;
+            }
+
+            // Empty locId means user cleared the selection in the picker — clear the field.
+            var newLoc = payload && payload.locId ? payload.locId : '';
+            rec.setCurrentSublistValue({
+                sublistId: SUBLIST, fieldId: FIELD.FROM_LOC,
+                value: newLoc, ignoreFieldChange: false
+            });
+
             pendingPickerLineIndex = null;
+            dbg('handlePickerSelection:done', { locId: newLoc || '(cleared)' });
             injectButtonsNow();
         } catch (e) { logErr('handlePickerSelection failed', e, { payload: payload }); }
     }
@@ -356,12 +381,32 @@ define(['N/url', 'N/currentRecord', 'N/ui/dialog'], function (url, currentRecord
             var soId = rec.id || '';
             var lineIndex = rec.getCurrentSublistIndex({ sublistId: SUBLIST });
 
+            // Pass the line's current from_location so the picker can pre-select it
+            var currentFromLoc = rec.getCurrentSublistValue({ sublistId: SUBLIST, fieldId: FIELD.FROM_LOC }) || '';
+
+            // Determine if we should open in read-only mode:
+            //   - line is locked (linked TO exists), OR
+            //   - page is in view mode
+            var processed = rec.getCurrentSublistValue({ sublistId: SUBLIST, fieldId: FIELD.PROCESSED });
+            var linkedTo = rec.getCurrentSublistValue({ sublistId: SUBLIST, fieldId: FIELD.LINKED_TO });
+            var locked = !!processed || !!linkedTo;
+            var isViewMode = (typeof pageMode === 'string' && pageMode === 'view');
+            var readOnly = locked || isViewMode;
+
             pendingPickerLineIndex = lineIndex;
+
+            var params = {
+                itemId: item, qtyRequired: qtyRequired,
+                destLocationId: destLoc, subsidiaryId: subsidiary,
+                soId: soId, lineId: lineIndex
+            };
+            if (currentFromLoc) params.selectedLocId = currentFromLoc;
+            if (readOnly) params.readOnly = 'T';
 
             var pickerUrl = url.resolveScript({
                 scriptId: PICKER_SCRIPT_ID,
                 deploymentId: PICKER_DEPLOY_ID,
-                params: { itemId: item, qtyRequired: qtyRequired, destLocationId: destLoc, subsidiaryId: subsidiary, soId: soId, lineId: lineIndex }
+                params: params
             });
 
             var w = window.open(pickerUrl, 'bc_inventory_picker',
@@ -407,15 +452,22 @@ define(['N/url', 'N/currentRecord', 'N/ui/dialog'], function (url, currentRecord
 
         // Map each DOM row to a record line index. The DOM order should match
         // the record line order; iterate in document order.
-        for (var i = 0; i < allRows.length && i < lineCount; i++) {
-            var row = allRows[i];
-            var method = String(rec.getSublistValue({ sublistId: SUBLIST, fieldId: FIELD.METHOD, line: i }) || '');
-            var processed = rec.getSublistValue({ sublistId: SUBLIST, fieldId: FIELD.PROCESSED, line: i });
-            var linkedTo = rec.getSublistValue({ sublistId: SUBLIST, fieldId: FIELD.LINKED_TO, line: i });
-            var locked = !!processed || !!linkedTo;
-            var shouldShow = (method === SOURCING_METHOD_TO) && !locked;
+        var currentLine = -1;
+        try { currentLine = rec.getCurrentSublistIndex({ sublistId: SUBLIST }); } catch (ignoreCurrent) {}
 
-            dbg('injectButtons:line', { idx: i, rowId: row.id, method: method, locked: locked, shouldShow: shouldShow });
+        for (var i = 0; i < allRows.length; i++) {
+            var row = allRows[i];
+            var method = '';
+            if (i === currentLine) {
+                method = String(rec.getCurrentSublistValue({ sublistId: SUBLIST, fieldId: FIELD.METHOD }) || '');
+            } else if (i < lineCount) {
+                method = String(rec.getSublistValue({ sublistId: SUBLIST, fieldId: FIELD.METHOD, line: i }) || '');
+            }
+            // Button is now informational/edit affordance — show on every
+            // TO-method line, locked or not. Popup adapts (read-only or editable).
+            var shouldShow = (method === SOURCING_METHOD_TO);
+
+            dbg('injectButtons:line', { idx: i, rowId: row.id, method: method, shouldShow: shouldShow });
 
             var cell = row.querySelector('td.' + BTN_CELL_CLASS);
             if (!cell) {
