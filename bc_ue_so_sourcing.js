@@ -18,8 +18,10 @@ define([
     'N/record',
     'N/search',
     'N/runtime',
-    'N/log'
-], function (record, search, runtime, log) {
+    'N/log',
+    'N/ui/serverWidget',
+    'N/url'
+], function (record, search, runtime, log, serverWidget, url) {
 
     // ---------- Constants ----------
 
@@ -34,6 +36,9 @@ define([
         PROCESSED:    'custcol_bc_sourcing_processed',
         ERROR:        'custcol_bc_sourcing_error'
     };
+
+    var PICKER_SCRIPT_ID = 'customscript_bc_sl_inventory_picker';
+    var PICKER_DEPLOY_ID = 'customdeploy_bc_sl_inventory_picker';
 
     var ALLOWED_ITEM_TYPES = { 'InvtPart': true, 'Assembly': true };
 
@@ -68,6 +73,15 @@ define([
     ];
 
     // ---------- Entry points ----------
+
+    function beforeLoad(context) {
+        try {
+            if (context.type !== context.UserEventType.VIEW) return;
+            injectViewModePickerButtons(context.form, context.newRecord);
+        } catch (e) {
+            log.error('beforeLoad:viewPicker failed', e);
+        }
+    }
 
     function beforeSubmit(context) {
         var T = context.UserEventType;
@@ -137,6 +151,177 @@ define([
         }
     }
 
+    // ---------- View mode picker ----------
+
+    function injectViewModePickerButtons(form, rec) {
+        if (!form || !rec) return;
+
+        var lines = buildViewModePickerLines(rec);
+        var hasButtons = lines.some(function (line) { return line && line.show; });
+        if (!hasButtons) return;
+
+        var field = form.addField({
+            id: 'custpage_bc_view_picker_buttons',
+            type: serverWidget.FieldType.INLINEHTML,
+            label: ' '
+        });
+        field.defaultValue = buildViewModePickerHtml(lines);
+    }
+
+    function buildViewModePickerLines(rec) {
+        var lineCount = rec.getLineCount({ sublistId: SUBLIST });
+        var subsidiary = rec.getValue({ fieldId: 'subsidiary' }) || '';
+        var headerLocation = rec.getValue({ fieldId: 'location' }) || '';
+        var soId = rec.id || '';
+        var lines = [];
+
+        for (var i = 0; i < lineCount; i++) {
+            var method = String(rec.getSublistValue({ sublistId: SUBLIST, fieldId: FIELD.METHOD, line: i }) || '');
+            if (method !== SOURCING_METHOD_TO) {
+                lines.push({ show: false });
+                continue;
+            }
+
+            var item = rec.getSublistValue({ sublistId: SUBLIST, fieldId: 'item', line: i }) || '';
+            var bo = parseFloat(rec.getSublistValue({ sublistId: SUBLIST, fieldId: 'quantitybackordered', line: i }) || '0');
+            var qty = parseFloat(rec.getSublistValue({ sublistId: SUBLIST, fieldId: 'quantity', line: i }) || '0');
+            var qtyRequired = bo > 0 ? bo : qty;
+            var destLoc = rec.getSublistValue({ sublistId: SUBLIST, fieldId: 'location', line: i }) || headerLocation;
+            var fromLoc = rec.getSublistValue({ sublistId: SUBLIST, fieldId: FIELD.FROM_LOC, line: i }) || '';
+            var lineId = getLineId(rec, i) || String(i);
+            var line = {
+                show: true,
+                label: fromLoc ? 'View Source' : 'View Locations',
+                url: '',
+                message: ''
+            };
+
+            if (!item) {
+                line.message = 'This line has no item selected.';
+            } else if (!qtyRequired || qtyRequired <= 0) {
+                line.message = 'This line has no backordered quantity or line quantity to inspect.';
+            } else if (!destLoc) {
+                line.message = 'This Sales Order line needs a destination Location before the picker can open.';
+            } else if (!subsidiary) {
+                line.message = 'This Sales Order needs a Subsidiary before the picker can open.';
+            } else {
+                var params = {
+                    itemId: item,
+                    qtyRequired: qtyRequired,
+                    destLocationId: destLoc,
+                    subsidiaryId: subsidiary,
+                    readOnly: 'T',
+                    soId: soId,
+                    lineId: lineId
+                };
+                if (fromLoc) params.selectedLocId = fromLoc;
+
+                line.url = url.resolveScript({
+                    scriptId: PICKER_SCRIPT_ID,
+                    deploymentId: PICKER_DEPLOY_ID,
+                    params: params
+                });
+            }
+
+            lines.push(line);
+        }
+
+        return lines;
+    }
+
+    function buildViewModePickerHtml(lines) {
+        var data = safeInlineJson({ lines: lines });
+        return [
+            '<script type="text/javascript">',
+            '(function(){',
+            'var cfg=' + data + ';',
+            'var BTN_CELL_CLASS="bc-view-pick-loc-cell";',
+            'var BTN_CLASS="bc-view-pick-loc-btn";',
+            'var STYLE="padding:3px 10px;font-size:11px;cursor:pointer;background:#125ab2;color:#fff;border:1px solid #0e4a94;border-radius:3px;white-space:nowrap;";',
+            'function findTable(){',
+            '  return document.getElementById("item_splits") || document.querySelector("table[id*=item]");',
+            '}',
+            'function getRows(table){',
+            '  var rows=table.querySelectorAll("tbody tr[id^=item_row_], tbody tr[id^=itemrow], tr[id^=item_row_], tr[id^=itemrow]");',
+            '  if(rows.length) return Array.prototype.slice.call(rows).filter(function(r){return r.querySelectorAll("td").length;});',
+            '  return Array.prototype.slice.call(table.querySelectorAll("tbody tr")).filter(function(r){',
+            '    return r.querySelectorAll("td").length>1 && !(r.className||"").match(/header|total/i);',
+            '  });',
+            '}',
+            'function ensureHeader(table){',
+            '  var row=table.querySelector("thead tr") || table.querySelector("tr.uir-machine-headerrow") || table.querySelector("tr.listheader");',
+            '  if(!row || row.querySelector("."+BTN_CELL_CLASS)) return;',
+            '  var cell=document.createElement(row.querySelector("th") ? "th" : "td");',
+            '  cell.className=BTN_CELL_CLASS;',
+            '  cell.style.padding="2px 6px";',
+            '  cell.style.whiteSpace="nowrap";',
+            '  cell.textContent="Source";',
+            '  row.appendChild(cell);',
+            '}',
+            'function openLine(idx){',
+            '  var line=cfg.lines[idx];',
+            '  if(!line) return false;',
+            '  if(!line.url){ alert(line.message || "The picker cannot open for this line."); return false; }',
+            '  var w=window.open(line.url,"bc_inventory_picker","width=820,height=560,resizable=yes,scrollbars=yes,status=no,toolbar=no,menubar=no,location=no");',
+            '  if(!w) alert("Allow popups from NetSuite and try again.");',
+            '  return false;',
+            '}',
+            'window.bcViewOpenPicker=openLine;',
+            'function inject(){',
+            '  var table=findTable();',
+            '  if(!table) return;',
+            '  ensureHeader(table);',
+            '  var rows=getRows(table);',
+            '  for(var i=0;i<rows.length && i<cfg.lines.length;i++){',
+            '    var row=rows[i];',
+            '    var line=cfg.lines[i];',
+            '    var cell=row.querySelector("td."+BTN_CELL_CLASS);',
+            '    if(!cell){',
+            '      cell=document.createElement("td");',
+            '      cell.className=BTN_CELL_CLASS;',
+            '      cell.style.padding="2px 6px";',
+            '      cell.style.whiteSpace="nowrap";',
+            '      row.appendChild(cell);',
+            '    }',
+            '    if(line && line.show){',
+            '      var label=line.label || "View Locations";',
+            '      var existing=cell.querySelector("button."+BTN_CLASS);',
+            '      if(existing && existing.getAttribute("data-bc-line")===String(i) && existing.textContent===label) continue;',
+            '      cell.innerHTML="";',
+            '      var btn=document.createElement("button");',
+            '      btn.type="button";',
+            '      btn.className=BTN_CLASS;',
+            '      btn.style.cssText=STYLE;',
+            '      btn.textContent=label;',
+            '      btn.setAttribute("data-bc-line",String(i));',
+            '      btn.onclick=(function(idx){return function(){return openLine(idx);};})(i);',
+            '      cell.appendChild(btn);',
+            '    } else if(cell.innerHTML){',
+            '      cell.innerHTML="";',
+            '    }',
+            '  }',
+            '}',
+            'function start(){',
+            '  inject();',
+            '  var delays=[50,150,400,1000,2000];',
+            '  for(var i=0;i<delays.length;i++) setTimeout(inject,delays[i]);',
+            '  try{new MutationObserver(function(){inject();}).observe(document.body,{childList:true,subtree:true});}catch(e){}',
+            '}',
+            'if(document.readyState==="loading") document.addEventListener("DOMContentLoaded",start); else start();',
+            '})();',
+            '</script>'
+        ].join('');
+    }
+
+    function safeInlineJson(value) {
+        return JSON.stringify(value)
+            .replace(/</g, '\\u003c')
+            .replace(/>/g, '\\u003e')
+            .replace(/&/g, '\\u0026')
+            .replace(/\u2028/g, '\\u2028')
+            .replace(/\u2029/g, '\\u2029');
+    }
+
     // ---------- Validation ----------
 
     function validateAllLines(rec) {
@@ -154,16 +339,14 @@ define([
         var linkedTo = rec.getSublistValue({ sublistId: SUBLIST, fieldId: FIELD.LINKED_TO, line: lineIdx });
         if (processed || linkedTo) return;
 
+        var fromLoc = rec.getSublistValue({ sublistId: SUBLIST, fieldId: FIELD.FROM_LOC, line: lineIdx });
+        if (!fromLoc) return;
+
         var lineNum = lineIdx + 1;
 
         var itemType = rec.getSublistValue({ sublistId: SUBLIST, fieldId: 'itemtype', line: lineIdx });
         if (itemType && !ALLOWED_ITEM_TYPES[itemType]) {
             throw new Error('Line ' + lineNum + ': item type "' + itemType + '" not supported for Transfer Order sourcing. Only Inventory and Assembly items are supported.');
-        }
-
-        var fromLoc = rec.getSublistValue({ sublistId: SUBLIST, fieldId: FIELD.FROM_LOC, line: lineIdx });
-        if (!fromLoc) {
-            throw new Error('Line ' + lineNum + ': Source From Location is required for Transfer Order sourcing.');
         }
 
         var lineDestLoc = rec.getSublistValue({ sublistId: SUBLIST, fieldId: 'location', line: lineIdx })
@@ -333,23 +516,34 @@ define([
     // ---------- Copy cleanup ----------
 
     /**
-     * Record-level COPY: clear everything on every line.
+     * Record-level COPY (Actions → Make Copy): clear linkage + sourcing inputs
+     * on every line. Keep method so TO-method lines show the Pick Location
+     * button on the new SO, prompting the user to re-pick source locations.
      */
     function cleanupAllLines(rec) {
         var lineCount = rec.getLineCount({ sublistId: SUBLIST });
         for (var i = 0; i < lineCount; i++) {
-            rec.setSublistValue({ sublistId: SUBLIST, fieldId: FIELD.LINKED_TO, line: i, value: '' });
-            rec.setSublistValue({ sublistId: SUBLIST, fieldId: FIELD.PROCESSED, line: i, value: false });
-            rec.setSublistValue({ sublistId: SUBLIST, fieldId: FIELD.ERROR, line: i, value: '' });
+            rec.setSublistValue({ sublistId: SUBLIST, fieldId: FIELD.LINKED_TO,    line: i, value: '' });
+            rec.setSublistValue({ sublistId: SUBLIST, fieldId: FIELD.PROCESSED,    line: i, value: false });
+            rec.setSublistValue({ sublistId: SUBLIST, fieldId: FIELD.ERROR,        line: i, value: '' });
+            rec.setSublistValue({ sublistId: SUBLIST, fieldId: FIELD.FROM_LOC,     line: i, value: '' });
+            rec.setSublistValue({ sublistId: SUBLIST, fieldId: FIELD.QTY_TRANSFER, line: i, value: '' });
+            // Method left as-is
         }
     }
 
     /**
      * Line-level Copy: NetSuite gives copied lines no database `line` ID (it's
      * a new insert from the user's perspective). If we see a "new" line carrying
-     * processed=true OR a linked_to value, it's a line-copy artifact. Wipe it.
+     * processed=true OR a linked_to value, it's a line-copy artifact.
      *
-     * This catches: Copy Line in sublist, mass duplicate, etc.
+     * Clear: linked_to, processed, error, from_location, qty_to_transfer.
+     * Keep:  sourcing_method (so the Pick Location button surfaces if method=TO,
+     *        prompting the user to deliberately re-pick a source location).
+     *
+     * The client script already does this on lineInit for immediate UX feedback;
+     * this is the server-side belt-and-suspenders for the case where the user
+     * skipped re-picking before saving (or for non-UI contexts).
      */
     function cleanupCopiedLines(rec) {
         var lineCount = rec.getLineCount({ sublistId: SUBLIST });
@@ -359,16 +553,17 @@ define([
                 dbLineId = rec.getSublistValue({ sublistId: SUBLIST, fieldId: 'line', line: i });
             } catch (e) {}
 
-            // A line without a `line` value is newly inserted in this save.
-            // If it carries processed=true or linked_to, it's a copy artifact.
             if (!dbLineId) {
                 var processed = rec.getSublistValue({ sublistId: SUBLIST, fieldId: FIELD.PROCESSED, line: i });
                 var linkedTo = rec.getSublistValue({ sublistId: SUBLIST, fieldId: FIELD.LINKED_TO, line: i });
                 if (processed || linkedTo) {
                     log.audit('cleanupCopiedLines:wipeNewLine', { lineIdx: i });
-                    rec.setSublistValue({ sublistId: SUBLIST, fieldId: FIELD.LINKED_TO, line: i, value: '' });
-                    rec.setSublistValue({ sublistId: SUBLIST, fieldId: FIELD.PROCESSED, line: i, value: false });
-                    rec.setSublistValue({ sublistId: SUBLIST, fieldId: FIELD.ERROR, line: i, value: '' });
+                    rec.setSublistValue({ sublistId: SUBLIST, fieldId: FIELD.LINKED_TO,    line: i, value: '' });
+                    rec.setSublistValue({ sublistId: SUBLIST, fieldId: FIELD.PROCESSED,    line: i, value: false });
+                    rec.setSublistValue({ sublistId: SUBLIST, fieldId: FIELD.ERROR,        line: i, value: '' });
+                    rec.setSublistValue({ sublistId: SUBLIST, fieldId: FIELD.FROM_LOC,     line: i, value: '' });
+                    rec.setSublistValue({ sublistId: SUBLIST, fieldId: FIELD.QTY_TRANSFER, line: i, value: '' });
+                    // Method left as-is intentionally
                 }
             }
         }
@@ -455,10 +650,10 @@ define([
                 var s = search.create({
                     type: 'inventorybalance',
                     filters: [['item', 'anyof', p.item], 'AND', ['location', 'anyof', p.location]],
-                    columns: [search.createColumn({ name: 'available' })]
+                    columns: [search.createColumn({ name: 'locationavailable' })]
                 });
                 var avail = 0;
-                s.run().each(function (r) { avail = parseFloat(r.getValue({ name: 'available' }) || '0'); return false; });
+                s.run().each(function (r) { avail = parseFloat(r.getValue({ name: 'locationavailable' }) || '0'); return false; });
                 availMap[key] = avail;
             } catch (e) { availMap[key] = 0; }
         });
@@ -477,7 +672,6 @@ define([
         if (subsidiary) to.setValue({ fieldId: 'subsidiary', value: subsidiary });
         to.setValue({ fieldId: 'location', value: fromLocId });
         to.setValue({ fieldId: 'transferlocation', value: toLocId });
-        to.setValue({ fieldId: 'incoterm', value: 1 });
         to.setValue({ fieldId: 'memo', value: 'Auto-created from SO #' + (soTranId || soId) });
         try { to.setValue({ fieldId: 'orderstatus', value: 'A' }); } catch (e) {}
 
@@ -571,6 +765,7 @@ define([
     }
 
     return {
+        beforeLoad: beforeLoad,
         beforeSubmit: beforeSubmit,
         afterSubmit: afterSubmit
     };
