@@ -138,6 +138,12 @@ define(['N/url', 'N/currentRecord', 'N/ui/dialog'], function (url, currentRecord
                     // Method (custcol_bc_sourcing_method) intentionally left as-is
                     // so if it was TO, the Pick Location button surfaces immediately
                     // on the new line.
+
+                    // After Copy Line, NetSuite paints the new row asynchronously.
+                    // Schedule a staircase of re-injects to catch whichever paint cycle wins.
+                    setTimeout(injectButtonsNow, 50);
+                    setTimeout(injectButtonsNow, 200);
+                    setTimeout(injectButtonsNow, 600);
                 }
             }
         } catch (e) {
@@ -382,21 +388,34 @@ define(['N/url', 'N/currentRecord', 'N/ui/dialog'], function (url, currentRecord
 
     function injectButtons() {
         var table = document.getElementById('item_splits');
-        if (!table) return;
+        if (!table) { dbg('injectButtons:noTable'); return; }
         var rec;
         try { rec = currentRecord.get(); } catch (e) { return; }
         var lineCount;
         try { lineCount = rec.getLineCount({ sublistId: SUBLIST }); } catch (e) { return; }
         ensureHeaderCell(table);
 
-        for (var i = 0; i < lineCount; i++) {
-            var row = document.getElementById('item_row_' + (i + 1));
-            if (!row) continue;
+        // Walk actual DOM rows under tbody rather than guessing IDs. After
+        // Copy Line, NetSuite may not number new rows as item_row_N+1 — it
+        // sometimes inserts with non-sequential IDs or re-paints out of order.
+        var tbody = table.querySelector('tbody');
+        if (!tbody) { dbg('injectButtons:noTbody'); return; }
+
+        // Get all data rows (skip header/totals rows that lack item_row_ id)
+        var allRows = tbody.querySelectorAll('tr[id^="item_row_"]');
+        dbg('injectButtons:rows', { domRows: allRows.length, recordLines: lineCount });
+
+        // Map each DOM row to a record line index. The DOM order should match
+        // the record line order; iterate in document order.
+        for (var i = 0; i < allRows.length && i < lineCount; i++) {
+            var row = allRows[i];
             var method = String(rec.getSublistValue({ sublistId: SUBLIST, fieldId: FIELD.METHOD, line: i }) || '');
             var processed = rec.getSublistValue({ sublistId: SUBLIST, fieldId: FIELD.PROCESSED, line: i });
             var linkedTo = rec.getSublistValue({ sublistId: SUBLIST, fieldId: FIELD.LINKED_TO, line: i });
             var locked = !!processed || !!linkedTo;
             var shouldShow = (method === SOURCING_METHOD_TO) && !locked;
+
+            dbg('injectButtons:line', { idx: i, rowId: row.id, method: method, locked: locked, shouldShow: shouldShow });
 
             var cell = row.querySelector('td.' + BTN_CELL_CLASS);
             if (!cell) {
@@ -407,15 +426,14 @@ define(['N/url', 'N/currentRecord', 'N/ui/dialog'], function (url, currentRecord
                 row.appendChild(cell);
             }
             if (shouldShow) {
-                if (!cell.querySelector('button.' + BTN_CLASS)) {
-                    cell.innerHTML = '<button type="button" class="' + BTN_CLASS + '" ' +
-                        'style="padding:3px 10px;font-size:11px;cursor:pointer;background:#125ab2;color:#fff;border:1px solid #0e4a94;border-radius:3px;" ' +
-                        'onclick="window.bcOpenPicker(' + i + ');return false;">Pick Location</button>';
-                } else {
-                    cell.querySelector('button.' + BTN_CLASS).setAttribute('onclick', 'window.bcOpenPicker(' + i + ');return false;');
-                }
-            } else if (cell.innerHTML) {
-                cell.innerHTML = '';
+                // Always rewrite the button onclick to reflect the current
+                // (possibly shifted) line index. Compare innerHTML cheaply.
+                var html = '<button type="button" class="' + BTN_CLASS + '" ' +
+                    'style="padding:3px 10px;font-size:11px;cursor:pointer;background:#125ab2;color:#fff;border:1px solid #0e4a94;border-radius:3px;" ' +
+                    'onclick="window.bcOpenPicker(' + i + ');return false;">Pick Location</button>';
+                if (cell.innerHTML !== html) cell.innerHTML = html;
+            } else {
+                if (cell.innerHTML) cell.innerHTML = '';
             }
         }
     }
