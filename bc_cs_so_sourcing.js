@@ -1,27 +1,22 @@
 /**
  * @NApiVersion 2.1
- * @NScriptType UserEventScript
+ * @NScriptType ClientScript
  * @NModuleScope Public
  *
- * BC SO Sourcing User Event (hardened)
+ * BC SO Sourcing Client Script (with saveRecord lock enforcement)
  *
- * Changes from prior version:
- *   - Close/cancel detection: now triggers on status transition into ANY
- *     closed-ish status on CREATE/EDIT/XEDIT, not just cancel/close types
- *   - Copy detection: handles both record copy (T.COPY) and line copy
- *     (lines with processed=true / linked_to populated but no database line ID
- *     = newly inserted from a Copy Line action — wipe them)
- *   - Stronger linkage-clear guard: validates that "unlocking" a line in the
- *     same save requires clearing BOTH linked_to AND processed
+ * Capabilities:
+ *   - Inject "Pick Location" buttons into the item sublist DOM
+ *   - Manage method/qty/from-location field interactions
+ *   - Open inventory picker popup, receive selection
+ *   - Capture a SNAPSHOT of locked line values on pageInit so saveRecord can
+ *     compare current values and BLOCK before round-tripping to the server
+ *   - Block header subsidiary / location changes when linked TOs exist
+ *   - Block close/cancel attempts client-side too
  */
-define([
-    'N/record',
-    'N/search',
-    'N/runtime',
-    'N/log'
-], function (record, search, runtime, log) {
+define(['N/url', 'N/currentRecord', 'N/ui/dialog'], function (url, currentRecord, dialog) {
 
-    // ---------- Constants ----------
+    var DEBUG = true;
 
     var SOURCING_METHOD_TO = '3';
     var SUBLIST = 'item';
@@ -35,503 +30,444 @@ define([
         ERROR:        'custcol_bc_sourcing_error'
     };
 
-    var ALLOWED_ITEM_TYPES = { 'InvtPart': true, 'Assembly': true };
+    var PICKER_SCRIPT_ID = 'customscript_bc_sl_inventory_picker';
+    var PICKER_DEPLOY_ID = 'customdeploy_bc_sl_inventory_picker';
 
-    // Active TO statuses (block SO close/cancel when any line has one)
-    var ACTIVE_TO_STATUSES = {
-        'TrnfrOrd:A': true,
-        'TrnfrOrd:B': true,
-        'TrnfrOrd:D': true,
-        'TrnfrOrd:E': true,
-        'TrnfrOrd:F': true,
-        'TrnfrOrd:G': true
-    };
+    var BTN_CLASS = 'bc-pick-loc-btn';
+    var BTN_CELL_CLASS = 'bc-pick-loc-cell';
 
-    // SO "closed-ish" statuses — blocks transition into these when active TOs exist
-    var SO_CLOSED_STATUSES = {
-        'F': true, 'closedOrder': true,
+    var INJECT_DEBOUNCE_MS = 30;
+    var INITIAL_RETRY_DELAYS = [50, 150, 400, 1000];
+
+    // SO closed-ish statuses (parallel to UE)
+    var CLOSED_STATUSES = {
+        'F': true, 'closedOrder': true, 'closed': true,
         'H': true, 'cancelled': true,
-        'closed': true,
-        'SalesOrd:F': true, 'SalesOrd:H': true
+        'SalesOrd:F': true, 'SalesOrd:H': true,
+        'Closed': true, 'Cancelled': true
     };
-
-    var SO_STATUS_PENDING_FULFILLMENT_TEXT = 'pendingFulfillment';
-    var SO_STATUS_PENDING_FULFILLMENT_CODE = 'B';
 
     var LOCKED_FIELD_GUARDS = [
-        { field: 'item',           label: 'Item' },
-        { field: 'quantity',       label: 'Quantity' },
-        { field: 'location',       label: 'Line Location' },
-        { field: FIELD.METHOD,     label: 'Sourcing Method' },
-        { field: FIELD.FROM_LOC,   label: 'Source From Location' },
+        { field: 'item',             label: 'Item' },
+        { field: 'quantity',         label: 'Quantity' },
+        { field: 'location',         label: 'Line Location' },
+        { field: FIELD.METHOD,       label: 'Sourcing Method' },
+        { field: FIELD.FROM_LOC,     label: 'Source From Location' },
         { field: FIELD.QTY_TRANSFER, label: 'Qty to Transfer' }
     ];
 
-    // ---------- Entry points ----------
+    // Snapshot of original values for locked lines, taken at pageInit
+    var lockedSnapshot = null; // { lineId -> { lineNum, values } }
+    var originalHeader = null; // { subsidiary, location, status }
+    var pendingPickerLineIndex = null;
+    var observer = null;
+    var injectTimer = null;
 
-    function beforeSubmit(context) {
-        var T = context.UserEventType;
-        var rec = context.newRecord;
-        var oldRec = context.oldRecord;
+    // ---------------- Logging ----------------
 
-        log.debug('beforeSubmit:start', { type: context.type, hasOld: !!oldRec });
+    function dbg(t, o) { if (DEBUG) try { console.log('[BC SO Sourcing]', t, o || ''); } catch (e) {} }
+    function logErr(t, e, x) { try { console.error('[BC SO Sourcing]', t, e, x || ''); } catch (z) {} }
 
-        // ----- DELETE -----
-        if (context.type === T.DELETE) {
-            blockDeleteIfActiveLinkedTOs(oldRec || rec);
-            return;
-        }
+    // ---------------- Entry points ----------------
 
-        // ----- COPY (record-level "Make Copy") -----
-        if (context.type === T.COPY) {
-            log.debug('beforeSubmit:COPY', { soId: rec.id });
-            cleanupAllLines(rec);
-            validateAllLines(rec);
-            return;
-        }
+    function pageInit(context) {
+        dbg('pageInit', { mode: context && context.mode });
 
-        // ----- CREATE / EDIT / XEDIT -----
-        if (context.type === T.CREATE || context.type === T.EDIT || context.type === T.XEDIT) {
+        var rec = currentRecord.get();
 
-            // Detect line-level copies (Copy Line button) — newly inserted lines
-            // that have processed=true or linked_to set from the copy source.
-            cleanupCopiedLines(rec);
-
-            // Per-line validation
-            validateAllLines(rec);
-
-            if (oldRec) {
-                enforceLockRestrictions(oldRec, rec);
-                enforceHeaderRestrictions(oldRec, rec);
-                blockCloseCancelIfActiveLinkedTOs(oldRec, rec);
-            }
-        }
-    }
-
-    function afterSubmit(context) {
+        // Snapshot original state for diff-based blocks
         try {
-            var T = context.UserEventType;
-            if (context.type !== T.CREATE && context.type !== T.EDIT &&
-                context.type !== T.XEDIT && context.type !== T.COPY) return;
-
-            var ctxType = runtime.executionContext;
-            var allowed = [runtime.ContextType.USER_INTERFACE, runtime.ContextType.WORKFLOW];
-            if (allowed.indexOf(ctxType) === -1) {
-                log.debug('afterSubmit:skipContext', { context: ctxType });
-                return;
-            }
-
-            var soId = context.newRecord.id;
-            var so = record.load({ type: record.Type.SALES_ORDER, id: soId, isDynamic: false });
-
-            var status = so.getValue({ fieldId: 'orderstatus' }) || so.getValue({ fieldId: 'status' });
-            if (status !== SO_STATUS_PENDING_FULFILLMENT_TEXT &&
-                status !== SO_STATUS_PENDING_FULFILLMENT_CODE) {
-                log.debug('afterSubmit:skipStatus', { status: status });
-                return;
-            }
-
-            runSourcingEngine(so);
+            lockedSnapshot = buildLockedSnapshot(rec);
+            originalHeader = {
+                subsidiary: rec.getValue({ fieldId: 'subsidiary' }),
+                location: rec.getValue({ fieldId: 'location' }),
+                status: rec.getValue({ fieldId: 'orderstatus' }) || rec.getValue({ fieldId: 'status' })
+            };
+            dbg('pageInit:snapshot', { lockedLines: Object.keys(lockedSnapshot).length, header: originalHeader });
         } catch (e) {
-            log.error('afterSubmit failed', e);
-        }
-    }
-
-    // ---------- Validation ----------
-
-    function validateAllLines(rec) {
-        var lineCount = rec.getLineCount({ sublistId: SUBLIST });
-        for (var i = 0; i < lineCount; i++) {
-            validateLine(rec, i);
-        }
-    }
-
-    function validateLine(rec, lineIdx) {
-        var method = String(rec.getSublistValue({ sublistId: SUBLIST, fieldId: FIELD.METHOD, line: lineIdx }) || '');
-        if (method !== SOURCING_METHOD_TO) return;
-
-        var processed = rec.getSublistValue({ sublistId: SUBLIST, fieldId: FIELD.PROCESSED, line: lineIdx });
-        var linkedTo = rec.getSublistValue({ sublistId: SUBLIST, fieldId: FIELD.LINKED_TO, line: lineIdx });
-        if (processed || linkedTo) return;
-
-        var lineNum = lineIdx + 1;
-
-        var itemType = rec.getSublistValue({ sublistId: SUBLIST, fieldId: 'itemtype', line: lineIdx });
-        if (itemType && !ALLOWED_ITEM_TYPES[itemType]) {
-            throw new Error('Line ' + lineNum + ': item type "' + itemType + '" not supported for Transfer Order sourcing. Only Inventory and Assembly items are supported.');
+            logErr('pageInit:snapshot failed', e);
         }
 
-        var fromLoc = rec.getSublistValue({ sublistId: SUBLIST, fieldId: FIELD.FROM_LOC, line: lineIdx });
-        if (!fromLoc) {
-            throw new Error('Line ' + lineNum + ': Source From Location is required for Transfer Order sourcing.');
-        }
-
-        var lineDestLoc = rec.getSublistValue({ sublistId: SUBLIST, fieldId: 'location', line: lineIdx })
-                       || rec.getValue({ fieldId: 'location' });
-        if (String(fromLoc) === String(lineDestLoc)) {
-            throw new Error('Line ' + lineNum + ': Source From Location cannot equal the destination Location.');
-        }
-
-        var isSpecialOrder = rec.getSublistValue({ sublistId: SUBLIST, fieldId: 'createpo', line: lineIdx });
-        if (isSpecialOrder) {
-            throw new Error('Line ' + lineNum + ': cannot use Transfer Order sourcing on a line that also has Special Order / Drop Ship configured.');
-        }
-        var poVendor = rec.getSublistValue({ sublistId: SUBLIST, fieldId: 'povendor', line: lineIdx });
-        if (poVendor) {
-            throw new Error('Line ' + lineNum + ': cannot use Transfer Order sourcing on a line with a PO Vendor populated.');
-        }
-    }
-
-    // ---------- Lock enforcement ----------
-
-    function enforceLockRestrictions(oldRec, newRec) {
-        var oldLocked = buildLockedLineMap(oldRec);
-        if (!hasAny(oldLocked)) return;
-
-        var newLineMap = buildLineIdMap(newRec);
-
-        Object.keys(oldLocked).forEach(function (lineId) {
-            var oldLine = oldLocked[lineId];
-            var newIdx = newLineMap[lineId];
-
-            // Deleted?
-            if (newIdx === undefined || newIdx === null) {
-                throw new Error('Cannot delete line ' + oldLine.lineNum +
-                    ': a Transfer Order is linked to this line. To remove the line, an Administrator must first cancel the linked TO and clear the Linked TO, Sourcing Processed, and Sourcing Error fields.');
-            }
-
-            var newProcessed = newRec.getSublistValue({ sublistId: SUBLIST, fieldId: FIELD.PROCESSED, line: newIdx });
-            var newLinkedTo = newRec.getSublistValue({ sublistId: SUBLIST, fieldId: FIELD.LINKED_TO, line: newIdx });
-            var stillLocked = !!newProcessed || !!newLinkedTo;
-
-            // Admin unlock = both fields cleared. Allow field changes.
-            if (!stillLocked) return;
-
-            // Partial unlock attempt (cleared one but not the other)
-            var oldProcessed = oldLine.values[FIELD.PROCESSED];
-            var oldLinkedTo = oldLine.values[FIELD.LINKED_TO];
-            var partialClear = (oldProcessed && !newProcessed && newLinkedTo) ||
-                               (oldLinkedTo && !newLinkedTo && newProcessed);
-            if (partialClear) {
-                throw new Error('Line ' + oldLine.lineNum + ': to unlock, clear BOTH the Linked Transfer Order AND the Sourcing Processed flag. Partial clearing is not allowed.');
-            }
-
-            // Field change check
-            for (var k = 0; k < LOCKED_FIELD_GUARDS.length; k++) {
-                var guard = LOCKED_FIELD_GUARDS[k];
-                var oldVal = oldLine.values[guard.field];
-                var newVal = newRec.getSublistValue({ sublistId: SUBLIST, fieldId: guard.field, line: newIdx });
-
-                if (String(oldVal == null ? '' : oldVal) !== String(newVal == null ? '' : newVal)) {
-                    throw new Error('Cannot change "' + guard.label + '" on line ' + oldLine.lineNum +
-                        ': a Transfer Order is linked to this line. To modify, an Administrator must first cancel the linked TO and clear the Linked TO and Sourcing Processed fields.');
-                }
-            }
-        });
-    }
-
-    function enforceHeaderRestrictions(oldRec, newRec) {
-        if (!anyLinkedTOsInRecord(newRec)) return;
-
-        var oldSub = oldRec.getValue({ fieldId: 'subsidiary' });
-        var newSub = newRec.getValue({ fieldId: 'subsidiary' });
-        if (String(oldSub || '') !== String(newSub || '')) {
-            throw new Error('Cannot change Subsidiary: this SO has one or more lines with linked Transfer Orders. Cancel and clear the linked TOs first.');
-        }
-
-        var oldLoc = oldRec.getValue({ fieldId: 'location' });
-        var newLoc = newRec.getValue({ fieldId: 'location' });
-        if (String(oldLoc || '') !== String(newLoc || '')) {
-            throw new Error('Cannot change header Location: this SO has one or more lines with linked Transfer Orders. Cancel and clear the linked TOs first.');
-        }
-    }
-
-    // ---------- Close/cancel block (hardened) ----------
-
-    function blockCloseCancelIfActiveLinkedTOs(oldRec, newRec) {
-        var oldStatus = String(oldRec.getValue({ fieldId: 'orderstatus' }) || oldRec.getValue({ fieldId: 'status' }) || '');
-        var newStatus = String(newRec.getValue({ fieldId: 'orderstatus' }) || newRec.getValue({ fieldId: 'status' }) || '');
-
-        log.debug('closeCheck:statuses', { oldStatus: oldStatus, newStatus: newStatus });
-
-        // Check header-level status transition into closed-ish
-        var headerClosed = (oldStatus !== newStatus) && SO_CLOSED_STATUSES[newStatus];
-
-        // Check line-level: any locked line that got its "isclosed" checkbox flipped to T
-        var lineClosed = checkAnyLockedLineClosing(oldRec, newRec);
-
-        if (headerClosed || lineClosed) {
-            var blockingLines = getActiveLinkedTOLines(newRec);
-            if (blockingLines.length) {
-                throw new Error('Cannot close/cancel: the following lines have active Transfer Orders that must be cancelled or operationally reversed first: ' + blockingLines.join('; '));
-            }
-        }
-    }
-
-    /**
-     * Detect closure via line-level isclosed flag flipping to true on a locked line.
-     */
-    function checkAnyLockedLineClosing(oldRec, newRec) {
-        try {
-            var oldMap = buildLockedLineMap(oldRec);
-            var newLineMap = buildLineIdMap(newRec);
-
-            for (var lineId in oldMap) {
-                if (!oldMap.hasOwnProperty(lineId)) continue;
-                var newIdx = newLineMap[lineId];
-                if (newIdx === undefined) continue;
-
-                var oldClosed = oldRec.getSublistValue({ sublistId: SUBLIST, fieldId: 'isclosed', line: indexOfLineId(oldRec, lineId) });
-                var newClosed = newRec.getSublistValue({ sublistId: SUBLIST, fieldId: 'isclosed', line: newIdx });
-                if (!oldClosed && newClosed) return true;
-            }
-        } catch (e) {
-            log.error('checkAnyLockedLineClosing failed', e);
-        }
-        return false;
-    }
-
-    function indexOfLineId(rec, targetId) {
-        var lineCount = rec.getLineCount({ sublistId: SUBLIST });
-        for (var i = 0; i < lineCount; i++) {
-            if (String(getLineId(rec, i)) === String(targetId)) return i;
-        }
-        return -1;
-    }
-
-    function blockDeleteIfActiveLinkedTOs(rec) {
-        var blockingLines = getActiveLinkedTOLines(rec);
-        if (blockingLines.length) {
-            throw new Error('Cannot delete this SO: ' + blockingLines.join('; ') + '. An Administrator must cancel or operationally reverse the linked TO(s) first.');
-        }
-    }
-
-    function getActiveLinkedTOLines(rec) {
-        var blocking = [];
-        var lineCount = rec.getLineCount({ sublistId: SUBLIST });
-        for (var i = 0; i < lineCount; i++) {
-            var linkedTo = rec.getSublistValue({ sublistId: SUBLIST, fieldId: FIELD.LINKED_TO, line: i });
-            if (!linkedTo) continue;
-
+        // Picker callbacks
+        window.bcPickerCallback = function (payload) { handlePickerSelection(payload); };
+        window.bcOpenPicker = function (lineIndex) {
             try {
-                var look = search.lookupFields({
-                    type: record.Type.TRANSFER_ORDER,
-                    id: linkedTo,
-                    columns: ['status', 'tranid']
-                });
-                var statusVal = look.status && look.status[0] ? look.status[0].value : '';
-                if (ACTIVE_TO_STATUSES[statusVal]) {
-                    blocking.push('Line ' + (i + 1) + ' (' + (look.tranid || ('TO#' + linkedTo)) + ', status ' + statusVal + ')');
-                }
-            } catch (e) {
-                log.error('getActiveLinkedTOLines:lookup', e);
+                var r = currentRecord.get();
+                r.selectLine({ sublistId: SUBLIST, line: parseInt(lineIndex, 10) });
+                if (canOpenPicker(r)) openPicker(r);
+            } catch (e) { logErr('bcOpenPicker failed', e); }
+        };
+
+        window.addEventListener('message', function (event) {
+            if (event && event.data && event.data.source === 'bc_picker') {
+                handlePickerSelection(event.data);
             }
-        }
-        return blocking;
+        }, false);
+
+        initialInjectWithRetry(0);
+        startObserver();
     }
 
-    // ---------- Copy cleanup ----------
+    function lineInit(context) {
+        if (!context || context.sublistId !== SUBLIST) return;
 
-    /**
-     * Record-level COPY (Actions → Make Copy): clear linkage + sourcing inputs
-     * on every line. Keep method so TO-method lines show the Pick Location
-     * button on the new SO, prompting the user to re-pick source locations.
-     */
-    function cleanupAllLines(rec) {
-        var lineCount = rec.getLineCount({ sublistId: SUBLIST });
-        for (var i = 0; i < lineCount; i++) {
-            rec.setSublistValue({ sublistId: SUBLIST, fieldId: FIELD.LINKED_TO,    line: i, value: '' });
-            rec.setSublistValue({ sublistId: SUBLIST, fieldId: FIELD.PROCESSED,    line: i, value: false });
-            rec.setSublistValue({ sublistId: SUBLIST, fieldId: FIELD.ERROR,        line: i, value: '' });
-            rec.setSublistValue({ sublistId: SUBLIST, fieldId: FIELD.FROM_LOC,     line: i, value: '' });
-            rec.setSublistValue({ sublistId: SUBLIST, fieldId: FIELD.QTY_TRANSFER, line: i, value: '' });
-            // Method left as-is
-        }
-    }
+        try {
+            var rec = context.currentRecord;
 
-    /**
-     * Line-level Copy: NetSuite gives copied lines no database `line` ID (it's
-     * a new insert from the user's perspective). If we see a "new" line carrying
-     * processed=true OR a linked_to value, it's a line-copy artifact.
-     *
-     * Clear: linked_to, processed, error, from_location, qty_to_transfer.
-     * Keep:  sourcing_method (so the Pick Location button surfaces if method=TO,
-     *        prompting the user to deliberately re-pick a source location).
-     *
-     * The client script already does this on lineInit for immediate UX feedback;
-     * this is the server-side belt-and-suspenders for the case where the user
-     * skipped re-picking before saving (or for non-UI contexts).
-     */
-    function cleanupCopiedLines(rec) {
-        var lineCount = rec.getLineCount({ sublistId: SUBLIST });
-        for (var i = 0; i < lineCount; i++) {
+            // Detect line-copy: a current line with no database `line` id but
+            // carrying processed=true or a linked_to value is a fresh copy of
+            // a locked line. Clean it immediately so the user re-picks.
             var dbLineId = null;
             try {
-                dbLineId = rec.getSublistValue({ sublistId: SUBLIST, fieldId: 'line', line: i });
+                dbLineId = rec.getCurrentSublistValue({ sublistId: SUBLIST, fieldId: 'line' });
             } catch (e) {}
 
             if (!dbLineId) {
-                var processed = rec.getSublistValue({ sublistId: SUBLIST, fieldId: FIELD.PROCESSED, line: i });
-                var linkedTo = rec.getSublistValue({ sublistId: SUBLIST, fieldId: FIELD.LINKED_TO, line: i });
+                var processed = rec.getCurrentSublistValue({ sublistId: SUBLIST, fieldId: FIELD.PROCESSED });
+                var linkedTo = rec.getCurrentSublistValue({ sublistId: SUBLIST, fieldId: FIELD.LINKED_TO });
+
                 if (processed || linkedTo) {
-                    log.audit('cleanupCopiedLines:wipeNewLine', { lineIdx: i });
-                    rec.setSublistValue({ sublistId: SUBLIST, fieldId: FIELD.LINKED_TO,    line: i, value: '' });
-                    rec.setSublistValue({ sublistId: SUBLIST, fieldId: FIELD.PROCESSED,    line: i, value: false });
-                    rec.setSublistValue({ sublistId: SUBLIST, fieldId: FIELD.ERROR,        line: i, value: '' });
-                    rec.setSublistValue({ sublistId: SUBLIST, fieldId: FIELD.FROM_LOC,     line: i, value: '' });
-                    rec.setSublistValue({ sublistId: SUBLIST, fieldId: FIELD.QTY_TRANSFER, line: i, value: '' });
-                    // Method left as-is intentionally
+                    dbg('lineInit:copyDetected:wipe');
+                    // Clear linkage fields
+                    rec.setCurrentSublistValue({ sublistId: SUBLIST, fieldId: FIELD.LINKED_TO,    value: '',    ignoreFieldChange: true });
+                    rec.setCurrentSublistValue({ sublistId: SUBLIST, fieldId: FIELD.PROCESSED,    value: false, ignoreFieldChange: true });
+                    rec.setCurrentSublistValue({ sublistId: SUBLIST, fieldId: FIELD.ERROR,        value: '',    ignoreFieldChange: true });
+                    // Clear sourcing inputs so user re-picks location + qty
+                    rec.setCurrentSublistValue({ sublistId: SUBLIST, fieldId: FIELD.FROM_LOC,     value: '',    ignoreFieldChange: true });
+                    rec.setCurrentSublistValue({ sublistId: SUBLIST, fieldId: FIELD.QTY_TRANSFER, value: '',    ignoreFieldChange: true });
+                    // Method (custcol_bc_sourcing_method) intentionally left as-is
+                    // so if it was TO, the Pick Location button surfaces immediately
+                    // on the new line.
                 }
             }
+        } catch (e) {
+            logErr('lineInit copy-detect failed', e);
         }
+
+        scheduleInject(INJECT_DEBOUNCE_MS);
     }
 
-    // ---------- Sourcing engine ----------
-
-    function runSourcingEngine(so) {
-        var soId = so.id;
-        var tranId = so.getValue({ fieldId: 'tranid' }) || '';
-        var subsidiary = so.getValue({ fieldId: 'subsidiary' });
-        var headerLocation = so.getValue({ fieldId: 'location' });
-
-        var qualifying = collectQualifyingLines(so, headerLocation);
-        if (!qualifying.length) {
-            log.debug('engine:noQualifyingLines', { soId: soId });
+    function fieldChanged(context) {
+        if (context.sublistId !== SUBLIST) {
+            // Body-level field changed — could be subsidiary, location, status
+            handleBodyFieldChange(context);
             return;
         }
-        var checked = recheckAvailability(qualifying);
-
-        var groups = {};
-        var skipped = [];
-        checked.forEach(function (line) {
-            if (line.skip) { skipped.push(line); return; }
-            if (!groups[line.fromLoc]) groups[line.fromLoc] = [];
-            groups[line.fromLoc].push(line);
-        });
-
-        var success = [];
-        var failed = [];
-        Object.keys(groups).forEach(function (fromLocId) {
-            var grp = groups[fromLocId];
-            try {
-                var toId = createTransferOrder(subsidiary, fromLocId, headerLocation, grp, tranId, soId);
-                grp.forEach(function (l) { success.push({ lineIdx: l.lineIdx, toId: toId }); });
-                log.audit('engine:toCreated', { fromLocId: fromLocId, toId: toId, lines: grp.length });
-            } catch (e) {
-                log.error('engine:toCreateFailed', { fromLocId: fromLocId, error: e.message });
-                grp.forEach(function (l) { failed.push({ lineIdx: l.lineIdx, error: 'TO creation failed: ' + e.message }); });
+        try {
+            var rec = context.currentRecord;
+            if (isLineLocked(rec)) {
+                // Lock check happens at saveRecord, but UX nicety: notify if user changes
+                // a locked-field on a locked line
+                if (LOCKED_FIELD_GUARDS.some(function (g) { return g.field === context.fieldId; })) {
+                    // Optionally show toast — for now, silent. saveRecord will block.
+                }
             }
-        });
-
-        writebackResults(soId, success, failed, skipped);
-        log.audit('engine:done', { soId: soId, success: success.length, failed: failed.length, skipped: skipped.length });
-    }
-
-    function collectQualifyingLines(so, headerLocation) {
-        var lineCount = so.getLineCount({ sublistId: SUBLIST });
-        var lines = [];
-        for (var i = 0; i < lineCount; i++) {
-            var method = String(so.getSublistValue({ sublistId: SUBLIST, fieldId: FIELD.METHOD, line: i }) || '');
-            if (method !== SOURCING_METHOD_TO) continue;
-            if (so.getSublistValue({ sublistId: SUBLIST, fieldId: FIELD.PROCESSED, line: i })) continue;
-            if (so.getSublistValue({ sublistId: SUBLIST, fieldId: FIELD.LINKED_TO, line: i })) continue;
-
-            var fromLoc = so.getSublistValue({ sublistId: SUBLIST, fieldId: FIELD.FROM_LOC, line: i });
-            if (!fromLoc) continue;
-            var item = so.getSublistValue({ sublistId: SUBLIST, fieldId: 'item', line: i });
-            if (!item) continue;
-
-            var bo = parseFloat(so.getSublistValue({ sublistId: SUBLIST, fieldId: 'quantitybackordered', line: i }) || '0');
-            var qty = parseFloat(so.getSublistValue({ sublistId: SUBLIST, fieldId: 'quantity', line: i }) || '0');
-            var qtyRequired = bo > 0 ? bo : qty;
-            if (qtyRequired <= 0) continue;
-
-            lines.push({
-                lineIdx: i, lineNum: i + 1,
-                item: item, fromLoc: fromLoc,
-                destLoc: so.getSublistValue({ sublistId: SUBLIST, fieldId: 'location', line: i }) || headerLocation,
-                qtyRequired: qtyRequired,
-                units: so.getSublistValue({ sublistId: SUBLIST, fieldId: 'units', line: i })
-            });
+            if (context.fieldId === FIELD.METHOD) {
+                handleMethodChange(rec);
+                injectButtonsNow();
+            }
+        } catch (e) {
+            logErr('fieldChanged failed', e, { field: context.fieldId });
         }
-        return lines;
     }
 
-    function recheckAvailability(lines) {
-        var pairs = {};
-        lines.forEach(function (l) { pairs[l.item + '|' + l.fromLoc] = { item: l.item, location: l.fromLoc }; });
-        var availMap = {};
-        Object.keys(pairs).forEach(function (key) {
-            var p = pairs[key];
-            try {
-                var s = search.create({
-                    type: 'inventorybalance',
-                    filters: [['item', 'anyof', p.item], 'AND', ['location', 'anyof', p.location]],
-                    columns: [search.createColumn({ name: 'locationavailable' })]
-                });
-                var avail = 0;
-                s.run().each(function (r) { avail = parseFloat(r.getValue({ name: 'locationavailable' }) || '0'); return false; });
-                availMap[key] = avail;
-            } catch (e) { availMap[key] = 0; }
-        });
-        return lines.map(function (l) {
-            var avail = availMap[l.item + '|' + l.fromLoc] || 0;
-            if (avail < l.qtyRequired) {
-                l.skip = true;
-                l.error = 'Availability dropped: requested ' + l.qtyRequired + ', available ' + avail + ' at source location at time of TO creation.';
+    function postSourcing(context) {
+        if (context.sublistId === SUBLIST) scheduleInject(INJECT_DEBOUNCE_MS);
+    }
+
+    function sublistChanged(context) {
+        if (context && context.sublistId === SUBLIST) scheduleInject(INJECT_DEBOUNCE_MS);
+    }
+
+    function validateLine(context) {
+        if (context.sublistId !== SUBLIST) return true;
+        try {
+            var rec = context.currentRecord;
+            var method = rec.getCurrentSublistValue({ sublistId: SUBLIST, fieldId: FIELD.METHOD });
+            if (String(method) !== SOURCING_METHOD_TO) return true;
+            if (isLineLocked(rec)) return true;
+
+            var item = rec.getCurrentSublistValue({ sublistId: SUBLIST, fieldId: 'item' });
+            var fromLoc = rec.getCurrentSublistValue({ sublistId: SUBLIST, fieldId: FIELD.FROM_LOC });
+
+            if (!item) { dialog.alert({ title: 'Item Required', message: 'Please select an item before choosing TO sourcing.' }); return false; }
+            if (!fromLoc) { dialog.alert({ title: 'Source Location Required', message: 'Click Pick Location to select a source.' }); return false; }
+            return true;
+        } catch (e) { logErr('validateLine failed', e); return true; }
+    }
+
+    /**
+     * saveRecord runs before any submit. Return false to block save.
+     * This is the client-side mirror of the UE beforeSubmit lock checks.
+     */
+    function saveRecord(context) {
+        try {
+            var rec = context.currentRecord;
+
+            // 1. Header subsidiary / location change check
+            if (originalHeader) {
+                var anyLinked = anyLinkedTOsInRecord(rec);
+                if (anyLinked) {
+                    var newSub = rec.getValue({ fieldId: 'subsidiary' });
+                    if (String(originalHeader.subsidiary || '') !== String(newSub || '')) {
+                        dialog.alert({ title: 'Cannot Change Subsidiary', message: 'This SO has linked Transfer Orders. Cancel and clear the linked TOs before changing Subsidiary.' });
+                        return false;
+                    }
+                    var newLoc = rec.getValue({ fieldId: 'location' });
+                    if (String(originalHeader.location || '') !== String(newLoc || '')) {
+                        dialog.alert({ title: 'Cannot Change Header Location', message: 'This SO has linked Transfer Orders. Cancel and clear the linked TOs before changing the header Location.' });
+                        return false;
+                    }
+                }
+
+                // 2. Close/cancel transition check
+                var newStatus = rec.getValue({ fieldId: 'orderstatus' }) || rec.getValue({ fieldId: 'status' });
+                if (String(originalHeader.status || '') !== String(newStatus || '') && CLOSED_STATUSES[newStatus]) {
+                    if (anyLinked) {
+                        dialog.alert({ title: 'Cannot Close/Cancel SO', message: 'This SO has lines with linked Transfer Orders. Cancel or operationally reverse those TOs before closing this SO.' });
+                        return false;
+                    }
+                }
             }
-            return l;
-        });
-    }
 
-    function createTransferOrder(subsidiary, fromLocId, toLocId, groupLines, soTranId, soId) {
-        var to = record.create({ type: record.Type.TRANSFER_ORDER, isDynamic: true });
-        if (subsidiary) to.setValue({ fieldId: 'subsidiary', value: subsidiary });
-        to.setValue({ fieldId: 'location', value: fromLocId });
-        to.setValue({ fieldId: 'transferlocation', value: toLocId });
-        to.setValue({ fieldId: 'memo', value: 'Auto-created from SO #' + (soTranId || soId) });
-        try { to.setValue({ fieldId: 'orderstatus', value: 'A' }); } catch (e) {}
+            // 3. Locked-line restrictions
+            if (lockedSnapshot && hasAny(lockedSnapshot)) {
+                var newLineMap = buildLineIdMapClient(rec);
 
-        groupLines.forEach(function (line) {
-            to.selectNewLine({ sublistId: 'item' });
-            to.setCurrentSublistValue({ sublistId: 'item', fieldId: 'item', value: line.item });
-            to.setCurrentSublistValue({ sublistId: 'item', fieldId: 'quantity', value: line.qtyRequired });
-            if (line.units) {
-                try { to.setCurrentSublistValue({ sublistId: 'item', fieldId: 'units', value: line.units }); } catch (e) {}
+                for (var lineId in lockedSnapshot) {
+                    if (!lockedSnapshot.hasOwnProperty(lineId)) continue;
+                    var oldLine = lockedSnapshot[lineId];
+                    var newIdx = newLineMap[lineId];
+
+                    if (newIdx === undefined || newIdx === null) {
+                        dialog.alert({
+                            title: 'Cannot Delete Line',
+                            message: 'Line ' + oldLine.lineNum + ' has a linked Transfer Order. Clear the Linked TO and Sourcing Processed fields first (Admin only), then save.'
+                        });
+                        return false;
+                    }
+
+                    var newProc = rec.getSublistValue({ sublistId: SUBLIST, fieldId: FIELD.PROCESSED, line: newIdx });
+                    var newLinkedTo = rec.getSublistValue({ sublistId: SUBLIST, fieldId: FIELD.LINKED_TO, line: newIdx });
+                    var stillLocked = !!newProc || !!newLinkedTo;
+
+                    if (!stillLocked) continue; // Admin unlocked, allow changes
+
+                    // Partial unlock?
+                    var oldProc = oldLine.values[FIELD.PROCESSED];
+                    var oldLinked = oldLine.values[FIELD.LINKED_TO];
+                    if ((oldProc && !newProc && newLinkedTo) || (oldLinked && !newLinkedTo && newProc)) {
+                        dialog.alert({
+                            title: 'Incomplete Unlock',
+                            message: 'Line ' + oldLine.lineNum + ': clear BOTH Linked Transfer Order AND Sourcing Processed to unlock. Partial clearing is not allowed.'
+                        });
+                        return false;
+                    }
+
+                    for (var k = 0; k < LOCKED_FIELD_GUARDS.length; k++) {
+                        var g = LOCKED_FIELD_GUARDS[k];
+                        var oVal = oldLine.values[g.field];
+                        var nVal = rec.getSublistValue({ sublistId: SUBLIST, fieldId: g.field, line: newIdx });
+                        if (String(oVal == null ? '' : oVal) !== String(nVal == null ? '' : nVal)) {
+                            dialog.alert({
+                                title: 'Cannot Change ' + g.label,
+                                message: 'Line ' + oldLine.lineNum + ' has a linked Transfer Order. To change ' + g.label + ', an Administrator must first cancel the linked TO and clear the Linked TO and Sourcing Processed fields on the line.'
+                            });
+                            return false;
+                        }
+                    }
+                }
             }
-            to.commitLine({ sublistId: 'item' });
-        });
-        return to.save({ ignoreMandatoryFields: false });
+
+            return true;
+        } catch (e) {
+            logErr('saveRecord check failed', e);
+            return true; // Fail open — UE will catch
+        }
     }
 
-    function writebackResults(soId, success, failed, skipped) {
-        if (!success.length && !failed.length && !skipped.length) return;
-        var so = record.load({ type: record.Type.SALES_ORDER, id: soId, isDynamic: false });
-        success.forEach(function (s) {
-            so.setSublistValue({ sublistId: SUBLIST, fieldId: FIELD.LINKED_TO, line: s.lineIdx, value: s.toId });
-            so.setSublistValue({ sublistId: SUBLIST, fieldId: FIELD.PROCESSED, line: s.lineIdx, value: true });
-            so.setSublistValue({ sublistId: SUBLIST, fieldId: FIELD.ERROR, line: s.lineIdx, value: '' });
-        });
-        failed.forEach(function (f) {
-            so.setSublistValue({ sublistId: SUBLIST, fieldId: FIELD.ERROR, line: f.lineIdx, value: f.error });
-        });
-        skipped.forEach(function (l) {
-            so.setSublistValue({ sublistId: SUBLIST, fieldId: FIELD.ERROR, line: l.lineIdx, value: l.error });
-        });
-        so.save({ ignoreMandatoryFields: true, enableSourcing: false });
+    // ---------------- Handlers ----------------
+
+    function handleMethodChange(rec) {
+        var method = String(rec.getCurrentSublistValue({ sublistId: SUBLIST, fieldId: FIELD.METHOD }) || '');
+        if (method === SOURCING_METHOD_TO) {
+            var qtyTransfer = rec.getCurrentSublistValue({ sublistId: SUBLIST, fieldId: FIELD.QTY_TRANSFER });
+            if (!qtyTransfer) {
+                var lineQty = rec.getCurrentSublistValue({ sublistId: SUBLIST, fieldId: 'quantity' });
+                if (lineQty) {
+                    rec.setCurrentSublistValue({ sublistId: SUBLIST, fieldId: FIELD.QTY_TRANSFER, value: lineQty, ignoreFieldChange: true });
+                }
+            }
+        } else {
+            rec.setCurrentSublistValue({ sublistId: SUBLIST, fieldId: FIELD.FROM_LOC, value: '', ignoreFieldChange: true });
+            rec.setCurrentSublistValue({ sublistId: SUBLIST, fieldId: FIELD.QTY_TRANSFER, value: '', ignoreFieldChange: true });
+        }
     }
 
-    // ---------- Diff helpers ----------
+    function handleBodyFieldChange(context) {
+        // Currently passive — saveRecord catches everything. Could add live alerts here later.
+    }
 
-    function buildLockedLineMap(rec) {
+    function handlePickerSelection(payload) {
+        try {
+            var rec = currentRecord.get();
+            if (pendingPickerLineIndex !== null) {
+                rec.selectLine({ sublistId: SUBLIST, line: pendingPickerLineIndex });
+            }
+            rec.setCurrentSublistValue({ sublistId: SUBLIST, fieldId: FIELD.FROM_LOC, value: payload.locId, ignoreFieldChange: false });
+            pendingPickerLineIndex = null;
+            injectButtonsNow();
+        } catch (e) { logErr('handlePickerSelection failed', e, { payload: payload }); }
+    }
+
+    // ---------------- Picker ----------------
+
+    function canOpenPicker(rec) {
+        var method = String(rec.getCurrentSublistValue({ sublistId: SUBLIST, fieldId: FIELD.METHOD }) || '');
+        var item = rec.getCurrentSublistValue({ sublistId: SUBLIST, fieldId: 'item' });
+        var bo = parseFloat(rec.getCurrentSublistValue({ sublistId: SUBLIST, fieldId: 'quantitybackordered' }) || '0');
+        var lineQty = parseFloat(rec.getCurrentSublistValue({ sublistId: SUBLIST, fieldId: 'quantity' }) || '0');
+        var qtyRequired = bo > 0 ? bo : lineQty;
+        var destLoc = rec.getCurrentSublistValue({ sublistId: SUBLIST, fieldId: 'location' }) || rec.getValue({ fieldId: 'location' });
+        var subsidiary = rec.getValue({ fieldId: 'subsidiary' });
+
+        if (method !== SOURCING_METHOD_TO) { dialog.alert({ title: 'Set Sourcing Method', message: 'Set Sourcing Method to "Transfer Order" first.' }); return false; }
+        if (!item) { dialog.alert({ title: 'Item Required', message: 'Select an item first.' }); return false; }
+        if (!qtyRequired || qtyRequired <= 0) { dialog.alert({ title: 'Qty Required', message: 'Line has no backordered qty or quantity to transfer.' }); return false; }
+        if (!destLoc) { dialog.alert({ title: 'Destination Location Required', message: 'Set a Location on this line or on the SO header.' }); return false; }
+        if (!subsidiary) { dialog.alert({ title: 'Subsidiary Required', message: 'The SO must have a subsidiary.' }); return false; }
+        return true;
+    }
+
+    function openPicker(rec) {
+        try {
+            var item = rec.getCurrentSublistValue({ sublistId: SUBLIST, fieldId: 'item' });
+            var bo = parseFloat(rec.getCurrentSublistValue({ sublistId: SUBLIST, fieldId: 'quantitybackordered' }) || '0');
+            var lineQty = parseFloat(rec.getCurrentSublistValue({ sublistId: SUBLIST, fieldId: 'quantity' }) || '0');
+            var qtyRequired = bo > 0 ? bo : lineQty;
+            var destLoc = rec.getCurrentSublistValue({ sublistId: SUBLIST, fieldId: 'location' }) || rec.getValue({ fieldId: 'location' });
+            var subsidiary = rec.getValue({ fieldId: 'subsidiary' });
+            var soId = rec.id || '';
+            var lineIndex = rec.getCurrentSublistIndex({ sublistId: SUBLIST });
+
+            pendingPickerLineIndex = lineIndex;
+
+            var pickerUrl = url.resolveScript({
+                scriptId: PICKER_SCRIPT_ID,
+                deploymentId: PICKER_DEPLOY_ID,
+                params: { itemId: item, qtyRequired: qtyRequired, destLocationId: destLoc, subsidiaryId: subsidiary, soId: soId, lineId: lineIndex }
+            });
+
+            var w = window.open(pickerUrl, 'bc_inventory_picker',
+                'width=820,height=560,resizable=yes,scrollbars=yes,status=no,toolbar=no,menubar=no,location=no');
+            if (!w) dialog.alert({ title: 'Popup Blocked', message: 'Allow popups from NetSuite and try again.' });
+        } catch (e) { logErr('openPicker failed', e); }
+    }
+
+    // ---------------- DOM injection ----------------
+
+    function scheduleInject(delayMs) {
+        if (injectTimer) clearTimeout(injectTimer);
+        injectTimer = setTimeout(function () { injectTimer = null; injectButtonsNow(); }, delayMs || INJECT_DEBOUNCE_MS);
+    }
+
+    function injectButtonsNow() { try { injectButtons(); } catch (e) { logErr('injectButtons failed', e); } }
+
+    function initialInjectWithRetry(idx) {
+        injectButtonsNow();
+        if (document.getElementById('item_splits')) return;
+        if (idx >= INITIAL_RETRY_DELAYS.length) return;
+        setTimeout(function () { initialInjectWithRetry(idx + 1); }, INITIAL_RETRY_DELAYS[idx]);
+    }
+
+    function injectButtons() {
+        var table = document.getElementById('item_splits');
+        if (!table) return;
+        var rec;
+        try { rec = currentRecord.get(); } catch (e) { return; }
+        var lineCount;
+        try { lineCount = rec.getLineCount({ sublistId: SUBLIST }); } catch (e) { return; }
+        ensureHeaderCell(table);
+
+        for (var i = 0; i < lineCount; i++) {
+            var row = document.getElementById('item_row_' + (i + 1));
+            if (!row) continue;
+            var method = String(rec.getSublistValue({ sublistId: SUBLIST, fieldId: FIELD.METHOD, line: i }) || '');
+            var processed = rec.getSublistValue({ sublistId: SUBLIST, fieldId: FIELD.PROCESSED, line: i });
+            var linkedTo = rec.getSublistValue({ sublistId: SUBLIST, fieldId: FIELD.LINKED_TO, line: i });
+            var locked = !!processed || !!linkedTo;
+            var shouldShow = (method === SOURCING_METHOD_TO) && !locked;
+
+            var cell = row.querySelector('td.' + BTN_CELL_CLASS);
+            if (!cell) {
+                cell = document.createElement('td');
+                cell.className = BTN_CELL_CLASS;
+                cell.style.padding = '2px 6px';
+                cell.style.whiteSpace = 'nowrap';
+                row.appendChild(cell);
+            }
+            if (shouldShow) {
+                if (!cell.querySelector('button.' + BTN_CLASS)) {
+                    cell.innerHTML = '<button type="button" class="' + BTN_CLASS + '" ' +
+                        'style="padding:3px 10px;font-size:11px;cursor:pointer;background:#125ab2;color:#fff;border:1px solid #0e4a94;border-radius:3px;" ' +
+                        'onclick="window.bcOpenPicker(' + i + ');return false;">Pick Location</button>';
+                } else {
+                    cell.querySelector('button.' + BTN_CLASS).setAttribute('onclick', 'window.bcOpenPicker(' + i + ');return false;');
+                }
+            } else if (cell.innerHTML) {
+                cell.innerHTML = '';
+            }
+        }
+    }
+
+    function ensureHeaderCell(table) {
+        var thead = table.querySelector('thead');
+        if (!thead) return;
+        var hr = thead.querySelector('tr');
+        if (!hr || hr.querySelector('th.' + BTN_CELL_CLASS)) return;
+        var th = document.createElement('th');
+        th.className = BTN_CELL_CLASS;
+        th.textContent = 'Pick';
+        th.style.padding = '2px 6px';
+        hr.appendChild(th);
+    }
+
+    function startObserver() {
+        var target = document.getElementById('item_splits') || document.body;
+        if (!target || observer) return;
+        try {
+            observer = new MutationObserver(function (mutations) {
+                var structural = false;
+                for (var i = 0; i < mutations.length; i++) {
+                    var m = mutations[i];
+                    if (m.type === 'childList' && (m.addedNodes.length || m.removedNodes.length)) {
+                        var ours = false;
+                        for (var j = 0; j < m.addedNodes.length; j++) {
+                            var n = m.addedNodes[j];
+                            if (n.classList && (n.classList.contains(BTN_CELL_CLASS) || n.classList.contains(BTN_CLASS))) { ours = true; break; }
+                        }
+                        if (!ours) { structural = true; break; }
+                    }
+                }
+                if (structural) scheduleInject(INJECT_DEBOUNCE_MS);
+            });
+            observer.observe(target, { childList: true, subtree: true });
+        } catch (e) { logErr('observer failed', e); }
+    }
+
+    // ---------------- Snapshot helpers ----------------
+
+    function buildLockedSnapshot(rec) {
         var map = {};
-        var lineCount = rec.getLineCount({ sublistId: SUBLIST });
+        var lineCount;
+        try { lineCount = rec.getLineCount({ sublistId: SUBLIST }); } catch (e) { return map; }
+
         for (var i = 0; i < lineCount; i++) {
             var processed = rec.getSublistValue({ sublistId: SUBLIST, fieldId: FIELD.PROCESSED, line: i });
             var linkedTo = rec.getSublistValue({ sublistId: SUBLIST, fieldId: FIELD.LINKED_TO, line: i });
             if (!processed && !linkedTo) continue;
 
-            var id = getLineId(rec, i);
+            var id = getLineIdClient(rec, i);
             if (!id) continue;
 
             var values = {};
@@ -540,49 +476,61 @@ define([
             });
             values[FIELD.PROCESSED] = processed;
             values[FIELD.LINKED_TO] = linkedTo;
-
             map[id] = { lineNum: i + 1, values: values };
         }
         return map;
     }
 
-    function buildLineIdMap(rec) {
+    function buildLineIdMapClient(rec) {
         var map = {};
-        var lineCount = rec.getLineCount({ sublistId: SUBLIST });
+        var lineCount;
+        try { lineCount = rec.getLineCount({ sublistId: SUBLIST }); } catch (e) { return map; }
         for (var i = 0; i < lineCount; i++) {
-            var id = getLineId(rec, i);
+            var id = getLineIdClient(rec, i);
             if (id) map[id] = i;
         }
         return map;
     }
 
-    function getLineId(rec, lineIdx) {
+    function getLineIdClient(rec, idx) {
         try {
-            var id = rec.getSublistValue({ sublistId: SUBLIST, fieldId: 'line', line: lineIdx });
+            var id = rec.getSublistValue({ sublistId: SUBLIST, fieldId: 'line', line: idx });
             if (id) return String(id);
         } catch (e) {}
         try {
-            var u = rec.getSublistValue({ sublistId: SUBLIST, fieldId: 'lineuniquekey', line: lineIdx });
+            var u = rec.getSublistValue({ sublistId: SUBLIST, fieldId: 'lineuniquekey', line: idx });
             if (u) return String(u);
         } catch (e) {}
         return null;
     }
 
     function anyLinkedTOsInRecord(rec) {
-        var lineCount = rec.getLineCount({ sublistId: SUBLIST });
-        for (var i = 0; i < lineCount; i++) {
-            if (rec.getSublistValue({ sublistId: SUBLIST, fieldId: FIELD.LINKED_TO, line: i })) return true;
-        }
+        try {
+            var lc = rec.getLineCount({ sublistId: SUBLIST });
+            for (var i = 0; i < lc; i++) {
+                if (rec.getSublistValue({ sublistId: SUBLIST, fieldId: FIELD.LINKED_TO, line: i })) return true;
+            }
+        } catch (e) {}
         return false;
     }
 
-    function hasAny(obj) {
-        for (var k in obj) if (obj.hasOwnProperty(k)) return true;
-        return false;
+    function isLineLocked(rec) {
+        try {
+            var processed = rec.getCurrentSublistValue({ sublistId: SUBLIST, fieldId: FIELD.PROCESSED });
+            var linkedTo = rec.getCurrentSublistValue({ sublistId: SUBLIST, fieldId: FIELD.LINKED_TO });
+            return !!processed || !!linkedTo;
+        } catch (e) { return false; }
     }
+
+    function hasAny(obj) { for (var k in obj) if (obj.hasOwnProperty(k)) return true; return false; }
 
     return {
-        beforeSubmit: beforeSubmit,
-        afterSubmit: afterSubmit
+        pageInit: pageInit,
+        lineInit: lineInit,
+        fieldChanged: fieldChanged,
+        postSourcing: postSourcing,
+        sublistChanged: sublistChanged,
+        validateLine: validateLine,
+        saveRecord: saveRecord
     };
 });
