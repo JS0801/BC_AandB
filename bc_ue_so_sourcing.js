@@ -642,6 +642,7 @@ define([
         if (!rec) return;
 
         var lineCount = rec.getLineCount({ sublistId: SUBLIST });
+        log.debug('lineCount', lineCount)
         for (var i = 0; i < lineCount; i++) {
             rec.setSublistValue({ sublistId: SUBLIST, fieldId: FIELD.METHOD,       line: i, value: '' });
             rec.setSublistValue({ sublistId: SUBLIST, fieldId: FIELD.FROM_LOC,     line: i, value: '' });
