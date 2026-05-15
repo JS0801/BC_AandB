@@ -10,8 +10,8 @@
  *     line's source location highlighted)
  *   - Read-only mode (readOnly=T) for view-mode access: no radio buttons,
  *     no Save, just a Close button — informational only
- *   - Save is allowed with NO selection — clearing the source location
- *   - "Clear Selection" link lets user de-select after picking
+ *   - Clear Selection lets the user de-select, but the SO save validation
+ *     requires a source location while Sourcing Method = Transfer Order
  *
  * URL params:
  *   itemId         (required) item internal ID
@@ -24,6 +24,12 @@
  *   lineId         (optional, round-trip identifier)
  */
 define(['N/search', 'N/log'], function (search, log) {
+
+    var INVBAL_FIELD = {
+        AVAILABLE: 'available',
+        ON_HAND: 'onhand',
+        COMMITTED: 'quantitycommitted'
+    };
 
     function onRequest(context) {
         var req = context.request;
@@ -89,17 +95,24 @@ define(['N/search', 'N/log'], function (search, log) {
     }
 
     function getInventoryRows(itemId, subsidiaryId, destLocationId, qtyRequired) {
-        var filters = [
+        return runInventoryRows(buildInventoryFilters(itemId, subsidiaryId), destLocationId, qtyRequired);
+    }
+
+    function buildInventoryFilters(itemId, subsidiaryId) {
+        return [
             ['item', 'anyof', itemId], 'AND',
             ['location.subsidiary', 'anyof', subsidiaryId], 'AND',
-            ['location.isinactive', 'is', 'F']
+            ['location.isinactive', 'is', 'F'], 'AND',
+            ['location.makeinventoryavailable', 'is', 'T']
         ];
+    }
 
+    function runInventoryRows(filters, destLocationId, qtyRequired) {
         var columns = [
             search.createColumn({ name: 'location' }),
-            search.createColumn({ name: 'available' }),
-            search.createColumn({ name: 'onhand' }),
-            search.createColumn({ name: 'invnumcommitted' })
+            search.createColumn({ name: INVBAL_FIELD.AVAILABLE }),
+            search.createColumn({ name: INVBAL_FIELD.ON_HAND }),
+            search.createColumn({ name: INVBAL_FIELD.COMMITTED })
         ];
 
         var rows = [];
@@ -108,9 +121,9 @@ define(['N/search', 'N/log'], function (search, log) {
         s.run().each(function (r) {
             var locId = r.getValue({ name: 'location' });
             var locName = r.getText({ name: 'location' });
-            var onHand = parseFloat(r.getValue({ name: 'onhand' }) || '0');
-            var available = parseFloat(r.getValue({ name: 'available' }) || '0');
-            var committed = parseFloat(r.getValue({ name: 'invnumcommitted' }) || '0');
+            var onHand = parseFloat(r.getValue({ name: INVBAL_FIELD.ON_HAND }) || '0');
+            var available = parseFloat(r.getValue({ name: INVBAL_FIELD.AVAILABLE }) || '0');
+            var committed = parseFloat(r.getValue({ name: INVBAL_FIELD.COMMITTED }) || '0');
 
             var isDest = (String(locId) === String(destLocationId));
             var sufficient = (available >= qtyRequired);
@@ -185,14 +198,13 @@ define(['N/search', 'N/log'], function (search, log) {
                 '<td class="num">' + formatNum(r.onHand) + '</td>',
                 '<td class="' + availClass + '">' + formatNum(r.available) + '</td>',
                 '<td class="num">' + formatNum(r.committed) + '</td>',
-                '<td class="num">' + formatNum(r.onOrder) + '</td>',
                 '<td class="status ' + (r.disabled ? 'status-disabled' : 'status-ok') + '">' + escapeHtml(r.status) + '</td>',
                 '</tr>'
             ].join('');
         }).join('');
 
         if (!rowHtml) {
-            rowHtml = '<tr><td colspan="7" class="empty">No locations found for this item in the current subsidiary.</td></tr>';
+            rowHtml = '<tr><td colspan="6" class="empty">No locations found for this item in the current subsidiary.</td></tr>';
         }
 
         var itemLabel = itemInfo.itemid
@@ -205,7 +217,7 @@ define(['N/search', 'N/log'], function (search, log) {
             var match = rows.filter(function (r) { return String(r.locId) === selectedLocId; })[0];
             initialSummary = match
                 ? 'Selected: <strong>' + escapeHtml(match.locName) + '</strong>'
-                : 'Selected: <strong>(location #' + escapeHtml(selectedLocId) + ' not in current results)</strong>';
+                : 'Selected source is no longer available in this picker result set. Re-select an eligible source location before saving.';
         } else {
             initialSummary = readOnly ? 'No source location set' : 'No location selected';
         }
@@ -292,7 +304,6 @@ define(['N/search', 'N/log'], function (search, log) {
             '        <th class="num">Qty On Hand</th>',
             '        <th class="num">Qty Available</th>',
             '        <th class="num">Qty Committed</th>',
-            '        <th class="num">Qty On Order</th>',
             '        <th>Status</th>',
             '      </tr></thead>',
             '      <tbody>', rowHtml, '</tbody>',
