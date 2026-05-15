@@ -130,6 +130,12 @@ define(['N/url', 'N/currentRecord', 'N/ui/dialog', 'N/search'], function (url, c
                 if (canOpenPicker(r)) openPicker(r);
             } catch (e) { logErr('bcOpenPicker failed', e); }
         };
+        window.bcOpenCurrentPicker = function () {
+            try {
+                var r = currentRecord.get();
+                if (canOpenPicker(r)) openPicker(r);
+            } catch (e) { logErr('bcOpenCurrentPicker failed', e); }
+        };
 
         window.addEventListener('message', function (event) {
             if (event && event.data && event.data.source === 'bc_picker') {
@@ -624,28 +630,83 @@ define(['N/url', 'N/currentRecord', 'N/ui/dialog', 'N/search'], function (url, c
             // Button is now informational/edit affordance — show on every
             // TO-method line, locked or not. Popup adapts (read-only or editable).
             var shouldShow = (method === SOURCING_METHOD_TO);
-
+	
             dbg('injectButtons:line', { idx: i, rowId: row.id, method: method, shouldShow: shouldShow });
+            syncPickButtonCell(row, i, shouldShow, false);
+        }
 
-            var cell = row.querySelector('td.' + BTN_CELL_CLASS);
-            if (!cell) {
-                cell = document.createElement('td');
-                cell.className = BTN_CELL_CLASS;
-                cell.style.padding = '2px 6px';
-                cell.style.whiteSpace = 'nowrap';
-                row.appendChild(cell);
-            }
-            if (shouldShow) {
-                // Always rewrite the button onclick to reflect the current
-                // (possibly shifted) line index. Compare innerHTML cheaply.
-                var html = '<button type="button" class="' + BTN_CLASS + '" ' +
-                    'style="padding:3px 10px;font-size:11px;cursor:pointer;background:#125ab2;color:#fff;border:1px solid #0e4a94;border-radius:3px;" ' +
-                    'onclick="window.bcOpenPicker(' + i + ');return false;">Pick Location</button>';
-                if (cell.innerHTML !== html) cell.innerHTML = html;
-            } else {
-                if (cell.innerHTML) cell.innerHTML = '';
+        // New, uncommitted lines may be rendered as NetSuite's current editor
+        // row and may not appear in the committed item_row_N set above.
+        var currentMethod = '';
+        try {
+            currentMethod = String(rec.getCurrentSublistValue({ sublistId: SUBLIST, fieldId: FIELD.METHOD }) || '');
+        } catch (ignoreMethod) {}
+        if (currentMethod === SOURCING_METHOD_TO) {
+            var currentRow = findCurrentEditorRow(table);
+            if (currentRow) {
+                dbg('injectButtons:currentLineFallback', { rowId: currentRow.id || '(no id)', currentLine: currentLine });
+                syncPickButtonCell(currentRow, currentLine, true, true);
             }
         }
+    }
+
+    function syncPickButtonCell(row, lineIndex, shouldShow, useCurrentLine) {
+        if (!row) return;
+
+        var cell = row.querySelector('td.' + BTN_CELL_CLASS);
+        if (!cell) {
+            cell = document.createElement('td');
+            cell.className = BTN_CELL_CLASS;
+            cell.style.padding = '2px 6px';
+            cell.style.whiteSpace = 'nowrap';
+            row.appendChild(cell);
+        }
+
+        if (shouldShow) {
+            var handler = useCurrentLine
+                ? 'window.bcOpenCurrentPicker();return false;'
+                : 'window.bcOpenPicker(' + lineIndex + ');return false;';
+            var html = '<button type="button" class="' + BTN_CLASS + '" ' +
+                'style="padding:3px 10px;font-size:11px;cursor:pointer;background:#125ab2;color:#fff;border:1px solid #0e4a94;border-radius:3px;" ' +
+                'onclick="' + handler + '">Pick Location</button>';
+            if (cell.innerHTML !== html) cell.innerHTML = html;
+        } else if (cell.innerHTML) {
+            cell.innerHTML = '';
+        }
+    }
+
+    function findCurrentEditorRow(table) {
+        var active = document.activeElement;
+        var row = closestRow(active);
+        if (isUsableItemRow(table, row)) return row;
+
+        var selectors = [
+            'tr.uir-machine-row-focused',
+            'tr.uir-machine-row-selected',
+            'tr.uir-machine-row-current',
+            'tr.ns-sublist-currentline',
+            'tr[id*="_row_current"]',
+            'tr[id^="item_row_"].uir-list-row-tr-selected'
+        ];
+        for (var i = 0; i < selectors.length; i++) {
+            var candidate = table.querySelector(selectors[i]);
+            if (isUsableItemRow(table, candidate)) return candidate;
+        }
+        return null;
+    }
+
+    function closestRow(el) {
+        while (el && el !== document) {
+            if (el.tagName && String(el.tagName).toLowerCase() === 'tr') return el;
+            el = el.parentNode;
+        }
+        return null;
+    }
+
+    function isUsableItemRow(table, row) {
+        if (!row || !table || !table.contains(row)) return false;
+        if (row.querySelectorAll('td').length < 2) return false;
+        return !(row.className || '').match(/header|total/i);
     }
 
     function ensureHeaderCell(table) {
