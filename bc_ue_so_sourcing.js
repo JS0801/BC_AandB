@@ -106,6 +106,10 @@ define([
 
     function beforeLoad(context) {
         try {
+            if (context.type === context.UserEventType.CREATE) {
+                cleanupCreateModeSourcingFields(context.newRecord);
+            }
+
             if (context.type !== context.UserEventType.VIEW) return;
             injectViewModePickerButtons(context.form, context.newRecord);
         } catch (e) {
@@ -127,7 +131,7 @@ define([
         }
 
         // ----- COPY (record-level "Make Copy") -----
-        if (context.type === T.COPY || context.type === T.CREATE) {
+        if (context.type === T.COPY) {
             log.debug('beforeSubmit:COPY', { soId: rec.id });
             cleanupAllLines(rec);
             validateAllLines(rec);
@@ -626,6 +630,25 @@ define([
             rec.setSublistValue({ sublistId: SUBLIST, fieldId: FIELD.FROM_LOC,     line: i, value: '' });
             rec.setSublistValue({ sublistId: SUBLIST, fieldId: FIELD.QTY_TRANSFER, line: i, value: '' });
             // Method left as-is
+        }
+    }
+
+    /**
+     * CREATE mode can inherit line custom fields when users copy or transform
+     * transactions. Clear all sourcing customization fields before the form is
+     * shown so users deliberately choose sourcing on the new SO.
+     */
+    function cleanupCreateModeSourcingFields(rec) {
+        if (!rec) return;
+
+        var lineCount = rec.getLineCount({ sublistId: SUBLIST });
+        for (var i = 0; i < lineCount; i++) {
+            rec.setSublistValue({ sublistId: SUBLIST, fieldId: FIELD.METHOD,       line: i, value: '' });
+            rec.setSublistValue({ sublistId: SUBLIST, fieldId: FIELD.FROM_LOC,     line: i, value: '' });
+            rec.setSublistValue({ sublistId: SUBLIST, fieldId: FIELD.QTY_TRANSFER, line: i, value: '' });
+            rec.setSublistValue({ sublistId: SUBLIST, fieldId: FIELD.LINKED_TO,    line: i, value: '' });
+            rec.setSublistValue({ sublistId: SUBLIST, fieldId: FIELD.PROCESSED,    line: i, value: false });
+            rec.setSublistValue({ sublistId: SUBLIST, fieldId: FIELD.ERROR,        line: i, value: '' });
         }
     }
 
