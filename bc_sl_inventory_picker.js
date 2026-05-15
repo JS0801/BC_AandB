@@ -102,8 +102,7 @@ define(['N/search', 'N/log'], function (search, log) {
         return [
             ['item', 'anyof', itemId], 'AND',
             ['location.subsidiary', 'anyof', subsidiaryId], 'AND',
-            ['location.isinactive', 'is', 'F'], 'AND',
-            ['location.makeinventoryavailable', 'is', 'T']
+            ['location.isinactive', 'is', 'F']
         ];
     }
 
