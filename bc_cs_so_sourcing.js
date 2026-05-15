@@ -30,6 +30,8 @@ define(['N/url', 'N/currentRecord', 'N/ui/dialog'], function (url, currentRecord
         ERROR:        'custcol_bc_sourcing_error'
     };
 
+    var ALLOWED_ITEM_TYPES = { 'InvtPart': true, 'Assembly': true };
+
     var PICKER_SCRIPT_ID = 'customscript_bc_sl_inventory_picker';
     var PICKER_DEPLOY_ID = 'customdeploy_bc_sl_inventory_picker';
 
@@ -196,11 +198,15 @@ define(['N/url', 'N/currentRecord', 'N/ui/dialog'], function (url, currentRecord
     }
 
     function validateLine(context) {
-        if (context.sublistId === SUBLIST) scheduleInject(INJECT_DEBOUNCE_MS);
-        // Source From Location is intentionally optional. Some TO-method lines
-        // may stay unassigned until a later edit; the sourcing engine skips
-        // those lines until a source is picked.
-        return true;
+        if (context.sublistId !== SUBLIST) return true;
+        try {
+            var ok = validateCurrentLineSourcingRules(context.currentRecord);
+            if (ok) scheduleInject(INJECT_DEBOUNCE_MS);
+            return ok;
+        } catch (e) {
+            logErr('validateLine failed', e);
+            return true; // UE remains authoritative
+        }
     }
 
     /**
@@ -210,6 +216,8 @@ define(['N/url', 'N/currentRecord', 'N/ui/dialog'], function (url, currentRecord
     function saveRecord(context) {
         try {
             var rec = context.currentRecord;
+
+            if (!validateCommittedLineSourcingRules(rec)) return false;
 
             // 1. Header subsidiary / location change check
             if (originalHeader) {
@@ -291,6 +299,105 @@ define(['N/url', 'N/currentRecord', 'N/ui/dialog'], function (url, currentRecord
             logErr('saveRecord check failed', e);
             return true; // Fail open — UE will catch
         }
+    }
+
+    // ---------------- Validation helpers ----------------
+
+    function validateCurrentLineSourcingRules(rec) {
+        var method = String(safeCurrentLineValue(rec, FIELD.METHOD) || '');
+        if (method !== SOURCING_METHOD_TO) return true;
+
+        var processed = safeCurrentLineValue(rec, FIELD.PROCESSED);
+        var linkedTo = safeCurrentLineValue(rec, FIELD.LINKED_TO);
+        if (processed || linkedTo) return true;
+
+        var lineIdx = -1;
+        try { lineIdx = rec.getCurrentSublistIndex({ sublistId: SUBLIST }); } catch (e) {}
+        return validateSourcingRuleValues(rec, lineIdx, {
+            itemType: safeCurrentLineValue(rec, 'itemtype'),
+            createPo: safeCurrentLineValue(rec, 'createpo'),
+            poVendor: safeCurrentLineValue(rec, 'povendor'),
+            fromLoc: safeCurrentLineValue(rec, FIELD.FROM_LOC),
+            destLoc: safeCurrentLineValue(rec, 'location') || rec.getValue({ fieldId: 'location' })
+        });
+    }
+
+    function validateCommittedLineSourcingRules(rec) {
+        var lineCount;
+        try { lineCount = rec.getLineCount({ sublistId: SUBLIST }); } catch (e) { return true; }
+
+        for (var i = 0; i < lineCount; i++) {
+            var method = String(safeLineValue(rec, FIELD.METHOD, i) || '');
+            if (method !== SOURCING_METHOD_TO) continue;
+
+            var processed = safeLineValue(rec, FIELD.PROCESSED, i);
+            var linkedTo = safeLineValue(rec, FIELD.LINKED_TO, i);
+            if (processed || linkedTo) continue;
+
+            var ok = validateSourcingRuleValues(rec, i, {
+                itemType: safeLineValue(rec, 'itemtype', i),
+                createPo: safeLineValue(rec, 'createpo', i),
+                poVendor: safeLineValue(rec, 'povendor', i),
+                fromLoc: safeLineValue(rec, FIELD.FROM_LOC, i),
+                destLoc: safeLineValue(rec, 'location', i) || rec.getValue({ fieldId: 'location' })
+            });
+            if (!ok) return false;
+        }
+        return true;
+    }
+
+    function validateSourcingRuleValues(rec, lineIdx, values) {
+        var lineLabel = lineIdx >= 0 ? ('Line ' + (lineIdx + 1)) : 'Current line';
+
+        if (values.itemType && !ALLOWED_ITEM_TYPES[values.itemType]) {
+            return validationAlert(
+                'Unsupported Item Type',
+                lineLabel + ': item type "' + values.itemType + '" is not supported for Transfer Order sourcing. Only Inventory and Assembly items are supported.'
+            );
+        }
+
+        if (hasNativePOValue(values.createPo)) {
+            return validationAlert(
+                'Native PO Conflict',
+                lineLabel + ': cannot use Transfer Order sourcing on a line that also has Special Order / Drop Ship configured.'
+            );
+        }
+
+        if (hasNativePOValue(values.poVendor)) {
+            return validationAlert(
+                'Native PO Conflict',
+                lineLabel + ': cannot use Transfer Order sourcing on a line with a PO Vendor populated.'
+            );
+        }
+
+        // Source From Location is intentionally optional. When blank, the
+        // sourcing engine skips this line until a source is selected.
+        if (values.fromLoc && String(values.fromLoc) === String(values.destLoc || '')) {
+            return validationAlert(
+                'Invalid Source Location',
+                lineLabel + ': Source From Location cannot equal the destination Location.'
+            );
+        }
+
+        return true;
+    }
+
+    function validationAlert(title, message) {
+        dialog.alert({ title: title, message: message });
+        return false;
+    }
+
+    function hasNativePOValue(value) {
+        return !(value === null || value === undefined || value === '' ||
+            value === false || value === 'F' || value === 'false');
+    }
+
+    function safeCurrentLineValue(rec, fieldId) {
+        try { return rec.getCurrentSublistValue({ sublistId: SUBLIST, fieldId: fieldId }); } catch (e) { return ''; }
+    }
+
+    function safeLineValue(rec, fieldId, lineIdx) {
+        try { return rec.getSublistValue({ sublistId: SUBLIST, fieldId: fieldId, line: lineIdx }); } catch (e) { return ''; }
     }
 
     // ---------------- Handlers ----------------
