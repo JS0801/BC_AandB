@@ -203,7 +203,7 @@ define(['N/url', 'N/currentRecord', 'N/ui/dialog', 'N/search'], function (url, c
             }
             if (context.fieldId === FIELD.METHOD) {
                 handleMethodChange(rec);
-                injectButtonsNow();
+                injectButtonsWithRetry();
             }
         } catch (e) {
             logErr('fieldChanged failed', e, { field: context.fieldId });
@@ -492,7 +492,7 @@ define(['N/url', 'N/currentRecord', 'N/ui/dialog', 'N/search'], function (url, c
 
             pendingPickerLineIndex = null;
             dbg('handlePickerSelection:done', { locId: newLoc || '(cleared)' });
-            injectButtonsNow();
+            injectButtonsWithRetry();
         } catch (e) { logErr('handlePickerSelection failed', e, { payload: payload }); }
     }
 
@@ -574,6 +574,13 @@ define(['N/url', 'N/currentRecord', 'N/ui/dialog', 'N/search'], function (url, c
     }
 
     function injectButtonsNow() { try { injectButtons(); } catch (e) { logErr('injectButtons failed', e); } }
+
+    function injectButtonsWithRetry() {
+        injectButtonsNow();
+        setTimeout(injectButtonsNow, 50);
+        setTimeout(injectButtonsNow, 200);
+        setTimeout(injectButtonsNow, 600);
+    }
 
     function initialInjectWithRetry(idx) {
         injectButtonsNow();
