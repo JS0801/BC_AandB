@@ -644,7 +644,7 @@ define([
         var lineCount = rec.getLineCount({ sublistId: SUBLIST });
         log.debug('lineCount', lineCount)
         for (var i = 0; i < lineCount; i++) {
-          rec.setSublistValue({ sublistId: SUBLIST, fieldId: FIELD.FROM_LOC,     line: i, value: '' });
+          rec.setSublistValue({ sublistId: SUBLIST, fieldId: 'custcol_bc_source_from_location',  line: i, value: '' });
             rec.setSublistValue({ sublistId: SUBLIST, fieldId: FIELD.METHOD,       line: i, value: 1 });
             
             rec.setSublistValue({ sublistId: SUBLIST, fieldId: FIELD.QTY_TRANSFER, line: i, value: '' });
