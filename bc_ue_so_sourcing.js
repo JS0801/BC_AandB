@@ -127,7 +127,7 @@ define([
         }
 
         // ----- COPY (record-level "Make Copy") -----
-        if (context.type === T.COPY) {
+        if (context.type === T.COPY || context.type === T.CREATE) {
             log.debug('beforeSubmit:COPY', { soId: rec.id });
             cleanupAllLines(rec);
             validateAllLines(rec);
