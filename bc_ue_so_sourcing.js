@@ -25,6 +25,7 @@ define([
 
     // ---------- Constants ----------
 
+    var SOURCING_METHOD_STOCK = '1';
     var SOURCING_METHOD_TO = '3';
     var SUBLIST = 'item';
 
@@ -108,8 +109,6 @@ define([
         try {
             if (context.type === context.UserEventType.CREATE || context.type === context.UserEventType.COPY) {
                 cleanupCreateModeSourcingFields(context.newRecord);
-
-              return;
             }
 
             if (context.type !== context.UserEventType.VIEW) return;
@@ -140,12 +139,15 @@ define([
             return;
         }
 
-        // ----- CREATE / EDIT / XEDIT -----
-        if (context.type === T.CREATE || context.type === T.EDIT || context.type === T.XEDIT) {
+        // ----- CREATE / EDIT / XEDIT / APPROVE -----
+        if (context.type === T.CREATE || context.type === T.EDIT ||
+            context.type === T.XEDIT || context.type === T.APPROVE) {
 
             // Detect line-level copies (Copy Line button) — newly inserted lines
             // that have processed=true or linked_to set from the copy source.
-            cleanupCopiedLines(rec);
+            if (context.type !== T.APPROVE) {
+                cleanupCopiedLines(rec);
+            }
 
             // Per-line validation
             validateAllLines(rec);
@@ -162,7 +164,8 @@ define([
         try {
             var T = context.UserEventType;
             if (context.type !== T.CREATE && context.type !== T.EDIT &&
-                context.type !== T.XEDIT && context.type !== T.COPY) return;
+                context.type !== T.XEDIT && context.type !== T.COPY &&
+                context.type !== T.APPROVE) return;
 
             var ctxType = runtime.executionContext;
             var allowed = [runtime.ContextType.USER_INTERFACE, runtime.ContextType.WORKFLOW];
@@ -172,11 +175,6 @@ define([
             }
 
             var soId = context.newRecord.id;
-            if (context.type !== T.XEDIT && !hasReadyTOSourcingLines(context.newRecord)) {
-                log.debug('afterSubmit:skipNoReadyLines', { soId: soId });
-                return;
-            }
-
             var so = record.load({ type: record.Type.SALES_ORDER, id: soId, isDynamic: false });
 	
             var status = so.getValue({ fieldId: 'orderstatus' }) || so.getValue({ fieldId: 'status' });
@@ -619,19 +617,18 @@ define([
     // ---------- Copy cleanup ----------
 
     /**
-     * Record-level COPY (Actions → Make Copy): clear linkage + sourcing inputs
-     * on every line. Keep method so TO-method lines show the Pick Location
-     * button on the new SO, prompting the user to re-pick source locations.
+     * Record-level COPY (Actions -> Make Copy): default every copied line back
+     * to Stock and clear all TO-specific fields.
      */
     function cleanupAllLines(rec) {
         var lineCount = rec.getLineCount({ sublistId: SUBLIST });
         for (var i = 0; i < lineCount; i++) {
+            rec.setSublistValue({ sublistId: SUBLIST, fieldId: FIELD.METHOD,       line: i, value: SOURCING_METHOD_STOCK });
             rec.setSublistValue({ sublistId: SUBLIST, fieldId: FIELD.LINKED_TO,    line: i, value: '' });
             rec.setSublistValue({ sublistId: SUBLIST, fieldId: FIELD.PROCESSED,    line: i, value: false });
             rec.setSublistValue({ sublistId: SUBLIST, fieldId: FIELD.ERROR,        line: i, value: '' });
             rec.setSublistValue({ sublistId: SUBLIST, fieldId: FIELD.FROM_LOC,     line: i, value: '' });
             rec.setSublistValue({ sublistId: SUBLIST, fieldId: FIELD.QTY_TRANSFER, line: i, value: '' });
-            // Method left as-is
         }
     }
 
@@ -644,11 +641,9 @@ define([
         if (!rec) return;
 
         var lineCount = rec.getLineCount({ sublistId: SUBLIST });
-        log.debug('lineCount', lineCount)
         for (var i = 0; i < lineCount; i++) {
-          
-            rec.setSublistValue({ sublistId: SUBLIST, fieldId: FIELD.METHOD,       line: i, value: 1 });
-            rec.setSublistValue({ sublistId: SUBLIST, fieldId: FIELD.FROM_LOC,     line: i, value: 4 });
+            rec.setSublistValue({ sublistId: SUBLIST, fieldId: FIELD.METHOD,       line: i, value: SOURCING_METHOD_STOCK });
+            rec.setSublistValue({ sublistId: SUBLIST, fieldId: FIELD.FROM_LOC,     line: i, value: '' });
             rec.setSublistValue({ sublistId: SUBLIST, fieldId: FIELD.QTY_TRANSFER, line: i, value: '' });
             rec.setSublistValue({ sublistId: SUBLIST, fieldId: FIELD.LINKED_TO,    line: i, value: '' });
             rec.setSublistValue({ sublistId: SUBLIST, fieldId: FIELD.PROCESSED,    line: i, value: false });
@@ -893,15 +888,14 @@ define([
 
     function hasReadyTOSourcingLines(rec) {
         var lineCount;
-        try { lineCount = rec.getLineCount({ sublistId: SUBLIST }); } catch (e) { return true; }
-        if (!lineCount) return true;
+        try { lineCount = rec.getLineCount({ sublistId: SUBLIST }); } catch (e) { return false; }
+        if (!lineCount) return false;
 
         for (var i = 0; i < lineCount; i++) {
             var method = String(rec.getSublistValue({ sublistId: SUBLIST, fieldId: FIELD.METHOD, line: i }) || '');
             if (method !== SOURCING_METHOD_TO) continue;
             if (rec.getSublistValue({ sublistId: SUBLIST, fieldId: FIELD.PROCESSED, line: i })) continue;
             if (rec.getSublistValue({ sublistId: SUBLIST, fieldId: FIELD.LINKED_TO, line: i })) continue;
-            if (rec.getSublistValue({ sublistId: SUBLIST, fieldId: FIELD.ERROR, line: i })) continue;
             if (!rec.getSublistValue({ sublistId: SUBLIST, fieldId: FIELD.FROM_LOC, line: i })) continue;
             if (getQtyRequired(rec, i) > 0) return true;
         }
