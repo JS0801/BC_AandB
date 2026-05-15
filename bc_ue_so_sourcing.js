@@ -106,7 +106,7 @@ define([
 
     function beforeLoad(context) {
         try {
-            if (context.type === context.UserEventType.CREATE) {
+            if (context.type === context.UserEventType.CREATE || context.type === context.UserEventType.COPY) {
                 cleanupCreateModeSourcingFields(context.newRecord);
             }
 
