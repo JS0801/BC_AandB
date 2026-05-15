@@ -339,20 +339,11 @@ define([
         var linkedTo = rec.getSublistValue({ sublistId: SUBLIST, fieldId: FIELD.LINKED_TO, line: lineIdx });
         if (processed || linkedTo) return;
 
-        var fromLoc = rec.getSublistValue({ sublistId: SUBLIST, fieldId: FIELD.FROM_LOC, line: lineIdx });
-        if (!fromLoc) return;
-
         var lineNum = lineIdx + 1;
 
         var itemType = rec.getSublistValue({ sublistId: SUBLIST, fieldId: 'itemtype', line: lineIdx });
         if (itemType && !ALLOWED_ITEM_TYPES[itemType]) {
             throw new Error('Line ' + lineNum + ': item type "' + itemType + '" not supported for Transfer Order sourcing. Only Inventory and Assembly items are supported.');
-        }
-
-        var lineDestLoc = rec.getSublistValue({ sublistId: SUBLIST, fieldId: 'location', line: lineIdx })
-                       || rec.getValue({ fieldId: 'location' });
-        if (String(fromLoc) === String(lineDestLoc)) {
-            throw new Error('Line ' + lineNum + ': Source From Location cannot equal the destination Location.');
         }
 
         var isSpecialOrder = rec.getSublistValue({ sublistId: SUBLIST, fieldId: 'createpo', line: lineIdx });
@@ -362,6 +353,15 @@ define([
         var poVendor = rec.getSublistValue({ sublistId: SUBLIST, fieldId: 'povendor', line: lineIdx });
         if (poVendor) {
             throw new Error('Line ' + lineNum + ': cannot use Transfer Order sourcing on a line with a PO Vendor populated.');
+        }
+
+        var fromLoc = rec.getSublistValue({ sublistId: SUBLIST, fieldId: FIELD.FROM_LOC, line: lineIdx });
+        if (!fromLoc) return;
+
+        var lineDestLoc = rec.getSublistValue({ sublistId: SUBLIST, fieldId: 'location', line: lineIdx })
+                       || rec.getValue({ fieldId: 'location' });
+        if (String(fromLoc) === String(lineDestLoc)) {
+            throw new Error('Line ' + lineNum + ': Source From Location cannot equal the destination Location.');
         }
     }
 
