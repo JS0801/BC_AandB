@@ -108,6 +108,8 @@ define([
         try {
             if (context.type === context.UserEventType.CREATE || context.type === context.UserEventType.COPY) {
                 cleanupCreateModeSourcingFields(context.newRecord);
+
+              return;
             }
 
             if (context.type !== context.UserEventType.VIEW) return;
