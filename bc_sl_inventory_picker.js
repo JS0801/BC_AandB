@@ -28,7 +28,7 @@ define(['N/search', 'N/log'], function (search, log) {
     var INVBAL_FIELD = {
         AVAILABLE: 'available',
         ON_HAND: 'onhand',
-        COMMITTED: 'quantitycommitted'
+        COMMITTED: 'invnumcommitted'
     };
 
     function onRequest(context) {
