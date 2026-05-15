@@ -39,6 +39,11 @@ define([
 
     var PICKER_SCRIPT_ID = 'customscript_bc_sl_inventory_picker';
     var PICKER_DEPLOY_ID = 'customdeploy_bc_sl_inventory_picker';
+    var PARAM_TO_ORDER_STATUS = 'custscript_bc_to_orderstatus';
+    var PARAM_TO_SOURCE_SO_FIELD = 'custscript_bc_to_source_so_field';
+    var DEFAULT_TO_ORDER_STATUS = 'A';
+    var DEFAULT_TO_SOURCE_SO_FIELD = 'custbody_bc_source_so';
+    var INVBAL_AVAILABLE_FIELD = 'available';
 
     var ALLOWED_ITEM_TYPES = { 'InvtPart': true, 'Assembly': true };
 
@@ -49,7 +54,27 @@ define([
         'TrnfrOrd:D': true,
         'TrnfrOrd:E': true,
         'TrnfrOrd:F': true,
-        'TrnfrOrd:G': true
+        'TrnfrOrd:G': true,
+        'pendingApproval': true,
+        'pendingFulfillment': true,
+        'partiallyFulfilled': true,
+        'pendingReceiptPartFulfilled': true,
+        'pendingReceipt': true,
+        'received': true,
+        'Pending Approval': true,
+        'Pending Fulfillment': true,
+        'Partially Fulfilled': true,
+        'Pending Receipt/Partially Fulfilled': true,
+        'Pending Receipt': true,
+        'Received': true
+    };
+
+    var CANCELLED_TO_STATUSES = {
+        'TrnfrOrd:H': true,
+        'H': true,
+        'cancelled': true,
+        'cancelledOrder': true,
+        'Cancelled': true
     };
 
     // SO "closed-ish" statuses — blocks transition into these when active TOs exist
@@ -60,8 +85,13 @@ define([
         'SalesOrd:F': true, 'SalesOrd:H': true
     };
 
-    var SO_STATUS_PENDING_FULFILLMENT_TEXT = 'pendingFulfillment';
-    var SO_STATUS_PENDING_FULFILLMENT_CODE = 'B';
+    var SO_PENDING_FULFILLMENT_STATUSES = {
+        'B': true,
+        'SalesOrd:B': true,
+        'pendingFulfillment': true,
+        'Pending Fulfillment': true,
+        'Pending Fulfillment/Pending Billing': true
+    };
 
     var LOCKED_FIELD_GUARDS = [
         { field: 'item',           label: 'Item' },
@@ -136,15 +166,23 @@ define([
             }
 
             var soId = context.newRecord.id;
-            var so = record.load({ type: record.Type.SALES_ORDER, id: soId, isDynamic: false });
-
-            var status = so.getValue({ fieldId: 'orderstatus' }) || so.getValue({ fieldId: 'status' });
-            if (status !== SO_STATUS_PENDING_FULFILLMENT_TEXT &&
-                status !== SO_STATUS_PENDING_FULFILLMENT_CODE) {
-                log.debug('afterSubmit:skipStatus', { status: status });
+            if (context.type !== T.XEDIT && !hasReadyTOSourcingLines(context.newRecord)) {
+                log.debug('afterSubmit:skipNoReadyLines', { soId: soId });
                 return;
             }
 
+            var so = record.load({ type: record.Type.SALES_ORDER, id: soId, isDynamic: false });
+	
+            var status = so.getValue({ fieldId: 'orderstatus' }) || so.getValue({ fieldId: 'status' });
+            if (!isPendingFulfillmentStatus(status)) {
+                log.debug('afterSubmit:skipStatus', { status: status });
+                return;
+            }
+            if (!hasReadyTOSourcingLines(so)) {
+                log.debug('afterSubmit:skipNoReadyLinesLoaded', { soId: soId });
+                return;
+            }
+	
             runSourcingEngine(so);
         } catch (e) {
             log.error('afterSubmit failed', e);
@@ -183,9 +221,7 @@ define([
             }
 
             var item = rec.getSublistValue({ sublistId: SUBLIST, fieldId: 'item', line: i }) || '';
-            var bo = parseFloat(rec.getSublistValue({ sublistId: SUBLIST, fieldId: 'quantitybackordered', line: i }) || '0');
-            var qty = parseFloat(rec.getSublistValue({ sublistId: SUBLIST, fieldId: 'quantity', line: i }) || '0');
-            var qtyRequired = bo > 0 ? bo : qty;
+            var qtyRequired = getQtyRequired(rec, i);
             var destLoc = rec.getSublistValue({ sublistId: SUBLIST, fieldId: 'location', line: i }) || headerLocation;
             var fromLoc = rec.getSublistValue({ sublistId: SUBLIST, fieldId: FIELD.FROM_LOC, line: i }) || '';
             var lineId = getLineId(rec, i) || String(i);
@@ -350,16 +386,28 @@ define([
         if (isSpecialOrder) {
             throw new Error('Line ' + lineNum + ': cannot use Transfer Order sourcing on a line that also has Special Order / Drop Ship configured.');
         }
+        var isDropShip = false;
+        try {
+            isDropShip = rec.getSublistValue({ sublistId: SUBLIST, fieldId: 'createdropship', line: lineIdx });
+        } catch (dropShipFieldErr) {}
+        if (isDropShip) {
+            throw new Error('Line ' + lineNum + ': cannot use Transfer Order sourcing on a Drop Ship line.');
+        }
         var poVendor = rec.getSublistValue({ sublistId: SUBLIST, fieldId: 'povendor', line: lineIdx });
         if (poVendor) {
             throw new Error('Line ' + lineNum + ': cannot use Transfer Order sourcing on a line with a PO Vendor populated.');
         }
-
+	
         var fromLoc = rec.getSublistValue({ sublistId: SUBLIST, fieldId: FIELD.FROM_LOC, line: lineIdx });
-        if (!fromLoc) return;
-
+        if (!fromLoc) {
+            throw new Error('Line ' + lineNum + ': Source From Location is required for Transfer Order sourcing. Use the Inventory Picker before saving/approving.');
+        }
+	
         var lineDestLoc = rec.getSublistValue({ sublistId: SUBLIST, fieldId: 'location', line: lineIdx })
                        || rec.getValue({ fieldId: 'location' });
+        if (!lineDestLoc) {
+            throw new Error('Line ' + lineNum + ': destination Location is required before Transfer Order sourcing can be used.');
+        }
         if (String(fromLoc) === String(lineDestLoc)) {
             throw new Error('Line ' + lineNum + ': Source From Location cannot equal the destination Location.');
         }
@@ -387,9 +435,6 @@ define([
             var newLinkedTo = newRec.getSublistValue({ sublistId: SUBLIST, fieldId: FIELD.LINKED_TO, line: newIdx });
             var stillLocked = !!newProcessed || !!newLinkedTo;
 
-            // Admin unlock = both fields cleared. Allow field changes.
-            if (!stillLocked) return;
-
             // Partial unlock attempt (cleared one but not the other)
             var oldProcessed = oldLine.values[FIELD.PROCESSED];
             var oldLinkedTo = oldLine.values[FIELD.LINKED_TO];
@@ -397,6 +442,14 @@ define([
                                (oldLinkedTo && !newLinkedTo && newProcessed);
             if (partialClear) {
                 throw new Error('Line ' + oldLine.lineNum + ': to unlock, clear BOTH the Linked Transfer Order AND the Sourcing Processed flag. Partial clearing is not allowed.');
+            }
+
+            // Admin correction unlock = both fields cleared. Only allow after
+            // the linked TO is Cancelled. Closed/received/active TOs remain
+            // the audit trail and require operational correction first.
+            if (!stillLocked) {
+                validateAdminUnlockAllowed(oldLine);
+                return;
             }
 
             // Field change check
@@ -414,18 +467,62 @@ define([
     }
 
     function enforceHeaderRestrictions(oldRec, newRec) {
-        if (!anyLinkedTOsInRecord(newRec)) return;
-
         var oldSub = oldRec.getValue({ fieldId: 'subsidiary' });
         var newSub = newRec.getValue({ fieldId: 'subsidiary' });
-        if (String(oldSub || '') !== String(newSub || '')) {
-            throw new Error('Cannot change Subsidiary: this SO has one or more lines with linked Transfer Orders. Cancel and clear the linked TOs first.');
-        }
-
         var oldLoc = oldRec.getValue({ fieldId: 'location' });
         var newLoc = newRec.getValue({ fieldId: 'location' });
-        if (String(oldLoc || '') !== String(newLoc || '')) {
-            throw new Error('Cannot change header Location: this SO has one or more lines with linked Transfer Orders. Cancel and clear the linked TOs first.');
+        var subChanged = String(oldSub || '') !== String(newSub || '');
+        var locChanged = String(oldLoc || '') !== String(newLoc || '');
+        if (!subChanged && !locChanged) return;
+
+        var blockingLines = getActiveLinkedTOLines(newRec);
+        if (!blockingLines.length) return;
+
+        if (subChanged) {
+            throw new Error('Cannot change Subsidiary: this SO has active linked Transfer Orders. Cancel or operationally reverse them first: ' + blockingLines.join('; '));
+        }
+        if (locChanged) {
+            throw new Error('Cannot change header Location: this SO has active linked Transfer Orders. Cancel or operationally reverse them first: ' + blockingLines.join('; '));
+        }
+    }
+
+    function validateAdminUnlockAllowed(oldLine) {
+        if (!isCurrentUserAdministrator()) {
+            throw new Error('Line ' + oldLine.lineNum + ': only an Administrator can clear Linked Transfer Order and Sourcing Processed.');
+        }
+
+        var linkedTo = oldLine.values[FIELD.LINKED_TO];
+        if (!linkedTo) return;
+
+        var statusVal = getTransferOrderStatusValue(linkedTo);
+        if (!statusVal) {
+            throw new Error('Line ' + oldLine.lineNum + ': cannot unlock because linked Transfer Order status could not be verified.');
+        }
+        if (!CANCELLED_TO_STATUSES[statusVal]) {
+            throw new Error('Line ' + oldLine.lineNum + ': linked Transfer Order must be Cancelled before clearing Linked Transfer Order and Sourcing Processed. Current status: ' + statusVal + '.');
+        }
+    }
+
+    function isCurrentUserAdministrator() {
+        try {
+            var user = runtime.getCurrentUser();
+            return String(user.role) === '3' || String(user.roleId || '').toLowerCase() === 'administrator';
+        } catch (e) {
+            return false;
+        }
+    }
+
+    function getTransferOrderStatusValue(toId) {
+        try {
+            var look = search.lookupFields({
+                type: record.Type.TRANSFER_ORDER,
+                id: toId,
+                columns: ['status']
+            });
+            return look.status && look.status[0] ? (look.status[0].value || look.status[0].text || '') : '';
+        } catch (e) {
+            log.error('getTransferOrderStatusValue failed', { toId: toId, error: e.message });
+            return '';
         }
     }
 
@@ -502,7 +599,7 @@ define([
                     id: linkedTo,
                     columns: ['status', 'tranid']
                 });
-                var statusVal = look.status && look.status[0] ? look.status[0].value : '';
+                var statusVal = look.status && look.status[0] ? (look.status[0].value || look.status[0].text || '') : '';
                 if (ACTIVE_TO_STATUSES[statusVal]) {
                     blocking.push('Line ' + (i + 1) + ' (' + (look.tranid || ('TO#' + linkedTo)) + ', status ' + statusVal + ')');
                 }
@@ -576,16 +673,27 @@ define([
         var tranId = so.getValue({ fieldId: 'tranid' }) || '';
         var subsidiary = so.getValue({ fieldId: 'subsidiary' });
         var headerLocation = so.getValue({ fieldId: 'location' });
-
-        var qualifying = collectQualifyingLines(so, headerLocation);
+	
+        var collected = collectQualifyingLines(so, headerLocation);
+        var qualifying = collected.lines;
+        var configSkipped = collected.skipped;
+        if (!headerLocation && qualifying.length) {
+            qualifying.forEach(function (line) {
+                line.skip = true;
+                line.error = 'Transfer Order sourcing skipped: SO header Location is required as the TO destination.';
+                configSkipped.push(line);
+            });
+            qualifying = [];
+        }
         if (!qualifying.length) {
-            log.debug('engine:noQualifyingLines', { soId: soId });
+            if (configSkipped.length) writebackResults(so, [], [], configSkipped);
+            log.debug('engine:noQualifyingLines', { soId: soId, skipped: configSkipped.length });
             return;
         }
         var checked = recheckAvailability(qualifying);
 
         var groups = {};
-        var skipped = [];
+        var skipped = configSkipped.slice(0);
         checked.forEach(function (line) {
             if (line.skip) { skipped.push(line); return; }
             if (!groups[line.fromLoc]) groups[line.fromLoc] = [];
@@ -606,13 +714,14 @@ define([
             }
         });
 
-        writebackResults(soId, success, failed, skipped);
+        writebackResults(so, success, failed, skipped);
         log.audit('engine:done', { soId: soId, success: success.length, failed: failed.length, skipped: skipped.length });
     }
 
     function collectQualifyingLines(so, headerLocation) {
         var lineCount = so.getLineCount({ sublistId: SUBLIST });
         var lines = [];
+        var skipped = [];
         for (var i = 0; i < lineCount; i++) {
             var method = String(so.getSublistValue({ sublistId: SUBLIST, fieldId: FIELD.METHOD, line: i }) || '');
             if (method !== SOURCING_METHOD_TO) continue;
@@ -620,13 +729,18 @@ define([
             if (so.getSublistValue({ sublistId: SUBLIST, fieldId: FIELD.LINKED_TO, line: i })) continue;
 
             var fromLoc = so.getSublistValue({ sublistId: SUBLIST, fieldId: FIELD.FROM_LOC, line: i });
-            if (!fromLoc) continue;
+            if (!fromLoc) {
+                skipped.push({
+                    lineIdx: i,
+                    lineNum: i + 1,
+                    error: 'Transfer Order sourcing skipped: Source From Location is not selected.'
+                });
+                continue;
+            }
             var item = so.getSublistValue({ sublistId: SUBLIST, fieldId: 'item', line: i });
             if (!item) continue;
 
-            var bo = parseFloat(so.getSublistValue({ sublistId: SUBLIST, fieldId: 'quantitybackordered', line: i }) || '0');
-            var qty = parseFloat(so.getSublistValue({ sublistId: SUBLIST, fieldId: 'quantity', line: i }) || '0');
-            var qtyRequired = bo > 0 ? bo : qty;
+            var qtyRequired = getQtyRequired(so, i);
             if (qtyRequired <= 0) continue;
 
             lines.push({
@@ -637,26 +751,42 @@ define([
                 units: so.getSublistValue({ sublistId: SUBLIST, fieldId: 'units', line: i })
             });
         }
-        return lines;
+        return { lines: lines, skipped: skipped };
     }
 
     function recheckAvailability(lines) {
         var pairs = {};
         lines.forEach(function (l) { pairs[l.item + '|' + l.fromLoc] = { item: l.item, location: l.fromLoc }; });
-        var availMap = {};
+        var itemIds = [];
+        var locIds = [];
         Object.keys(pairs).forEach(function (key) {
-            var p = pairs[key];
+            itemIds.push(pairs[key].item);
+            locIds.push(pairs[key].location);
+        });
+
+        var availMap = {};
+        if (itemIds.length && locIds.length) {
             try {
                 var s = search.create({
                     type: 'inventorybalance',
-                    filters: [['item', 'anyof', p.item], 'AND', ['location', 'anyof', p.location]],
-                    columns: [search.createColumn({ name: 'locationavailable' })]
+                    filters: [['item', 'anyof', unique(itemIds)], 'AND', ['location', 'anyof', unique(locIds)]],
+                    columns: [
+                        search.createColumn({ name: 'item' }),
+                        search.createColumn({ name: 'location' }),
+                        search.createColumn({ name: INVBAL_AVAILABLE_FIELD })
+                    ]
                 });
-                var avail = 0;
-                s.run().each(function (r) { avail = parseFloat(r.getValue({ name: 'locationavailable' }) || '0'); return false; });
-                availMap[key] = avail;
-            } catch (e) { availMap[key] = 0; }
-        });
+                s.run().each(function (r) {
+                    var item = r.getValue({ name: 'item' });
+                    var loc = r.getValue({ name: 'location' });
+                    var key = item + '|' + loc;
+                    availMap[key] = (availMap[key] || 0) + parseFloat(r.getValue({ name: INVBAL_AVAILABLE_FIELD }) || '0');
+                    return true;
+                });
+            } catch (e) {
+                log.error('recheckAvailability:batchSearchFailed', e);
+            }
+        }
         return lines.map(function (l) {
             var avail = availMap[l.item + '|' + l.fromLoc] || 0;
             if (avail < l.qtyRequired) {
@@ -673,8 +803,17 @@ define([
         to.setValue({ fieldId: 'location', value: fromLocId });
         to.setValue({ fieldId: 'transferlocation', value: toLocId });
         to.setValue({ fieldId: 'memo', value: 'Auto-created from SO #' + (soTranId || soId) });
-        try { to.setValue({ fieldId: 'orderstatus', value: 'A' }); } catch (e) {}
-
+        var orderStatus = getScriptParam(PARAM_TO_ORDER_STATUS, DEFAULT_TO_ORDER_STATUS);
+        if (orderStatus) {
+            try { to.setValue({ fieldId: 'orderstatus', value: orderStatus }); } catch (e) {}
+        }
+        var sourceSoField = getScriptParam(PARAM_TO_SOURCE_SO_FIELD, DEFAULT_TO_SOURCE_SO_FIELD);
+        if (sourceSoField) {
+            try { to.setValue({ fieldId: sourceSoField, value: soId }); } catch (e) {
+                log.debug('createTransferOrder:sourceSOFieldSkipped', { fieldId: sourceSoField, error: e.message });
+            }
+        }
+	
         groupLines.forEach(function (line) {
             to.selectNewLine({ sublistId: 'item' });
             to.setCurrentSublistValue({ sublistId: 'item', fieldId: 'item', value: line.item });
@@ -687,21 +826,80 @@ define([
         return to.save({ ignoreMandatoryFields: false });
     }
 
-    function writebackResults(soId, success, failed, skipped) {
+    function writebackResults(so, success, failed, skipped) {
         if (!success.length && !failed.length && !skipped.length) return;
-        var so = record.load({ type: record.Type.SALES_ORDER, id: soId, isDynamic: false });
+        var changed = false;
         success.forEach(function (s) {
-            so.setSublistValue({ sublistId: SUBLIST, fieldId: FIELD.LINKED_TO, line: s.lineIdx, value: s.toId });
-            so.setSublistValue({ sublistId: SUBLIST, fieldId: FIELD.PROCESSED, line: s.lineIdx, value: true });
-            so.setSublistValue({ sublistId: SUBLIST, fieldId: FIELD.ERROR, line: s.lineIdx, value: '' });
+            changed = setLineValueIfChanged(so, FIELD.LINKED_TO, s.lineIdx, s.toId) || changed;
+            changed = setLineValueIfChanged(so, FIELD.PROCESSED, s.lineIdx, true) || changed;
+            changed = setLineValueIfChanged(so, FIELD.ERROR, s.lineIdx, '') || changed;
         });
         failed.forEach(function (f) {
-            so.setSublistValue({ sublistId: SUBLIST, fieldId: FIELD.ERROR, line: f.lineIdx, value: f.error });
+            changed = setLineValueIfChanged(so, FIELD.ERROR, f.lineIdx, f.error) || changed;
         });
         skipped.forEach(function (l) {
-            so.setSublistValue({ sublistId: SUBLIST, fieldId: FIELD.ERROR, line: l.lineIdx, value: l.error });
+            changed = setLineValueIfChanged(so, FIELD.ERROR, l.lineIdx, l.error) || changed;
         });
-        so.save({ ignoreMandatoryFields: true, enableSourcing: false });
+        if (changed) so.save({ ignoreMandatoryFields: true, enableSourcing: false });
+    }
+
+    function setLineValueIfChanged(rec, fieldId, lineIdx, value) {
+        var oldVal = rec.getSublistValue({ sublistId: SUBLIST, fieldId: fieldId, line: lineIdx });
+        if (String(oldVal == null ? '' : oldVal) === String(value == null ? '' : value)) return false;
+        rec.setSublistValue({ sublistId: SUBLIST, fieldId: fieldId, line: lineIdx, value: value });
+        return true;
+    }
+
+    function getQtyRequired(rec, lineIdx) {
+        var qtyToTransfer = parseFloat(rec.getSublistValue({ sublistId: SUBLIST, fieldId: FIELD.QTY_TRANSFER, line: lineIdx }) || '0');
+        if (qtyToTransfer > 0) return qtyToTransfer;
+
+        var bo = parseFloat(rec.getSublistValue({ sublistId: SUBLIST, fieldId: 'quantitybackordered', line: lineIdx }) || '0');
+        if (bo > 0) return bo;
+
+        return parseFloat(rec.getSublistValue({ sublistId: SUBLIST, fieldId: 'quantity', line: lineIdx }) || '0');
+    }
+
+    function isPendingFulfillmentStatus(status) {
+        return !!SO_PENDING_FULFILLMENT_STATUSES[String(status || '')];
+    }
+
+    function hasReadyTOSourcingLines(rec) {
+        var lineCount;
+        try { lineCount = rec.getLineCount({ sublistId: SUBLIST }); } catch (e) { return true; }
+        if (!lineCount) return true;
+
+        for (var i = 0; i < lineCount; i++) {
+            var method = String(rec.getSublistValue({ sublistId: SUBLIST, fieldId: FIELD.METHOD, line: i }) || '');
+            if (method !== SOURCING_METHOD_TO) continue;
+            if (rec.getSublistValue({ sublistId: SUBLIST, fieldId: FIELD.PROCESSED, line: i })) continue;
+            if (rec.getSublistValue({ sublistId: SUBLIST, fieldId: FIELD.LINKED_TO, line: i })) continue;
+            if (rec.getSublistValue({ sublistId: SUBLIST, fieldId: FIELD.ERROR, line: i })) continue;
+            if (!rec.getSublistValue({ sublistId: SUBLIST, fieldId: FIELD.FROM_LOC, line: i })) continue;
+            if (getQtyRequired(rec, i) > 0) return true;
+        }
+        return false;
+    }
+
+    function getScriptParam(paramId, defaultValue) {
+        try {
+            var value = runtime.getCurrentScript().getParameter({ name: paramId });
+            return value || defaultValue || '';
+        } catch (e) {
+            return defaultValue || '';
+        }
+    }
+
+    function unique(values) {
+        var seen = {};
+        var out = [];
+        values.forEach(function (value) {
+            var key = String(value || '');
+            if (!key || seen[key]) return;
+            seen[key] = true;
+            out.push(value);
+        });
+        return out;
     }
 
     // ---------- Diff helpers ----------
