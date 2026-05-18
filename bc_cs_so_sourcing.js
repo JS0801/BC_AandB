@@ -2,18 +2,6 @@
  * @NApiVersion 2.1
  * @NScriptType ClientScript
  * @NModuleScope Public
- *
- * BC SO Sourcing Client Script
- *
- * Capabilities:
- *   - Inject "Pick Location" buttons into the item sublist DOM
- *   - Manage method/from-location interactions and default transfer qty from SO line qty
- *   - Open inventory picker popup, receive selection
- *   - Capture a snapshot of locked line values on pageInit so saveRecord can
- *     compare current values and block before round-tripping to the server
- *   - Block header subsidiary / location changes when linked TOs exist
- *   - Block close/cancel attempts client-side too
- *   - Clear copied sourcing/linkage fields on full SO Copy and Copy Line
  */
 define(['N/url', 'N/currentRecord', 'N/ui/dialog', 'N/search', 'N/runtime'], function (url, currentRecord, dialog, search, runtime) {
 
@@ -38,6 +26,7 @@ define(['N/url', 'N/currentRecord', 'N/ui/dialog', 'N/search', 'N/runtime'], fun
     var PICKER_SCRIPT_ID = 'customscript_bc_sl_inventory_picker';
     var PICKER_DEPLOY_ID = 'customdeploy_bc_sl_inventory_picker';
     var ROLE_SOURCING_ADMIN_FIELD = 'custrecord_bc_sourcing_admin_role';
+    var INVBAL_AVAILABLE_FIELD = 'available';
 
     var LINE_FIELD = {
         ITEM: 'item',
@@ -317,6 +306,7 @@ define(['N/url', 'N/currentRecord', 'N/ui/dialog', 'N/search', 'N/runtime'], fun
             }
 
             if (!validateCommittedLineSourcingRules(rec)) return false;
+            if (!validateCumulativeAvailabilityClient(rec)) return false;
 
             // 1. Header subsidiary / location change and close/cancel checks
             if (!copyCleanupMode && originalHeader) {
@@ -803,6 +793,8 @@ define(['N/url', 'N/currentRecord', 'N/ui/dialog', 'N/search', 'N/runtime'], fun
                 destLocationId: destLoc, subsidiaryId: subsidiary,
                 soId: soId, lineId: lineIndex
             };
+            var otherDemandByLoc = buildOtherLineDemandByLocation(rec, item, lineIndex);
+            if (hasAny(otherDemandByLoc)) params.otherDemandByLoc = encodeDemandByLocation(otherDemandByLoc);
             if (currentFromLoc) params.selectedLocId = currentFromLoc;
             if (readOnly) params.readOnly = 'T';
 
@@ -841,6 +833,164 @@ define(['N/url', 'N/currentRecord', 'N/ui/dialog', 'N/search', 'N/runtime'], fun
 
         var parsed = parseFloat(value);
         return isNaN(parsed) ? null : parsed;
+    }
+
+    function buildOtherLineDemandByLocation(rec, itemId, currentLineIndex) {
+        var demand = {};
+        var lineCount;
+        try { lineCount = rec.getLineCount({ sublistId: SUBLIST }); } catch (e) { return demand; }
+
+        for (var i = 0; i < lineCount; i++) {
+            if (i === currentLineIndex) continue;
+            var method = String(safeLineValue(rec, FIELD.METHOD, i) || '');
+            if (method !== SOURCING_METHOD_TO) continue;
+            if (String(safeLineValue(rec, 'item', i) || '') !== String(itemId || '')) continue;
+            if (isPopulated(safeLineValue(rec, FIELD.PROCESSED, i))) continue;
+            if (isPopulated(safeLineValue(rec, FIELD.LINKED_TO, i))) continue;
+
+            var fromLoc = safeLineValue(rec, FIELD.FROM_LOC, i);
+            if (!fromLoc) continue;
+
+            var qtyRequired = getLineQtyRequired(rec, i);
+            if (qtyRequired <= 0) continue;
+
+            var key = String(fromLoc);
+            demand[key] = (demand[key] || 0) + qtyRequired;
+        }
+        return demand;
+    }
+
+    function encodeDemandByLocation(demand) {
+        var parts = [];
+        for (var locId in demand) {
+            if (!demand.hasOwnProperty(locId)) continue;
+            if (!locId || !(demand[locId] > 0)) continue;
+            parts.push(encodeURIComponent(locId) + ':' + encodeURIComponent(String(demand[locId])));
+        }
+        return parts.join(',');
+    }
+
+    function getLineQtyRequired(rec, lineIdx) {
+        var qtyToTransfer = parseFloat(safeLineValue(rec, FIELD.QTY_TRANSFER, lineIdx) || '0');
+        if (qtyToTransfer > 0) return qtyToTransfer;
+
+        var backordered = parseFloat(safeLineValue(rec, 'quantitybackordered', lineIdx) || '0');
+        if (backordered > 0) return backordered;
+
+        var ordered = parseFloat(safeLineValue(rec, LINE_FIELD.QUANTITY, lineIdx) || '0');
+        return ordered > 0 ? ordered : 0;
+    }
+
+    function validateCumulativeAvailabilityClient(rec) {
+        var demand = buildCumulativeDemandByItemSource(rec);
+        if (!demand.keys.length) return true;
+
+        var availableByKey = lookupAvailableByItemSourceClient(demand.itemIds, demand.locationIds);
+        if (!availableByKey) return false;
+        for (var i = 0; i < demand.keys.length; i++) {
+            var key = demand.keys[i];
+            var entry = demand.byKey[key];
+            var available = availableByKey[key] || 0;
+            if (available < entry.qty) {
+                dialog.alert({
+                    title: 'Insufficient Available Qty',
+                    message: 'Lines ' + entry.lineNums.join(', ') + ': item "' + entry.itemLabel +
+                        '" from source location "' + entry.locationLabel + '" has combined Qty to Transfer ' +
+                        entry.qty + ', but only ' + available +
+                        ' is available. Choose a different source location or reduce Qty to Transfer before saving.'
+                });
+                return false;
+            }
+        }
+        return true;
+    }
+
+    function buildCumulativeDemandByItemSource(rec) {
+        var out = { byKey: {}, keys: [], itemIds: [], locationIds: [] };
+        var lineCount;
+        try { lineCount = rec.getLineCount({ sublistId: SUBLIST }); } catch (e) { return out; }
+
+        for (var i = 0; i < lineCount; i++) {
+            var method = String(safeLineValue(rec, FIELD.METHOD, i) || '');
+            if (method !== SOURCING_METHOD_TO) continue;
+            if (isPopulated(safeLineValue(rec, FIELD.PROCESSED, i))) continue;
+            if (isPopulated(safeLineValue(rec, FIELD.LINKED_TO, i))) continue;
+
+            var item = safeLineValue(rec, 'item', i);
+            var fromLoc = safeLineValue(rec, FIELD.FROM_LOC, i);
+            if (!item || !fromLoc) continue;
+
+            var qtyRequired = getLineQtyRequired(rec, i);
+            if (qtyRequired <= 0) continue;
+
+            var key = String(item) + '|' + String(fromLoc);
+            if (!out.byKey[key]) {
+                out.byKey[key] = {
+                    item: item,
+                    fromLoc: fromLoc,
+                    qty: 0,
+                    lineNums: [],
+                    itemLabel: getLineText(rec, 'item', i) || String(item),
+                    locationLabel: getLineText(rec, FIELD.FROM_LOC, i) || String(fromLoc)
+                };
+                out.keys.push(key);
+                out.itemIds.push(item);
+                out.locationIds.push(fromLoc);
+            }
+            out.byKey[key].qty += qtyRequired;
+            out.byKey[key].lineNums.push(i + 1);
+        }
+        return out;
+    }
+
+    function lookupAvailableByItemSourceClient(itemIds, locationIds) {
+        var map = {};
+        itemIds = uniqueValues(itemIds);
+        locationIds = uniqueValues(locationIds);
+        if (!itemIds.length || !locationIds.length) return map;
+
+        try {
+            var s = search.create({
+                type: 'inventorybalance',
+                filters: [['item', 'anyof', itemIds], 'AND', ['location', 'anyof', locationIds]],
+                columns: [
+                    search.createColumn({ name: 'item' }),
+                    search.createColumn({ name: 'location' }),
+                    search.createColumn({ name: INVBAL_AVAILABLE_FIELD })
+                ]
+            });
+            s.run().each(function (r) {
+                var item = r.getValue({ name: 'item' });
+                var loc = r.getValue({ name: 'location' });
+                var key = String(item) + '|' + String(loc);
+                map[key] = (map[key] || 0) + parseFloat(r.getValue({ name: INVBAL_AVAILABLE_FIELD }) || '0');
+                return true;
+            });
+        } catch (e) {
+            logErr('lookupAvailableByItemSourceClient failed', e);
+            dialog.alert({
+                title: 'Cannot Verify Availability',
+                message: 'The script could not verify cumulative source availability before saving. Try again or contact an Administrator.'
+            });
+            return null;
+        }
+        return map;
+    }
+
+    function uniqueValues(values) {
+        var seen = {};
+        var out = [];
+        for (var i = 0; i < values.length; i++) {
+            var key = String(values[i] || '');
+            if (!key || seen[key]) continue;
+            seen[key] = true;
+            out.push(values[i]);
+        }
+        return out;
+    }
+
+    function getLineText(rec, fieldId, lineIdx) {
+        try { return rec.getSublistText({ sublistId: SUBLIST, fieldId: fieldId, line: lineIdx }); } catch (e) { return ''; }
     }
 
     // ---------------- DOM injection ----------------
