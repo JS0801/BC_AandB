@@ -46,6 +46,7 @@ define([
     var DEFAULT_TO_ORDER_STATUS = 'A';
     var DEFAULT_TO_SOURCE_SO_FIELD = 'custbody_bc_source_so';
     var INVBAL_AVAILABLE_FIELD = 'available';
+    var ROLE_SOURCING_ADMIN_FIELD = 'custrecord_bc_sourcing_admin_role';
 
     var ALLOWED_ITEM_TYPES = { 'InvtPart': true, 'Assembly': true };
 
@@ -68,7 +69,9 @@ define([
         'Partially Fulfilled': true,
         'Pending Receipt/Partially Fulfilled': true,
         'Pending Receipt': true,
-        'Received': true
+        'Received': true,
+        'closed': true,
+        'Closed': true
     };
 
     var CANCELLED_TO_STATUSES = {
@@ -84,6 +87,8 @@ define([
         'F': true, 'closedOrder': true,
         'H': true, 'cancelled': true,
         'closed': true,
+        'Closed': true,
+        'Cancelled': true,
         'SalesOrd:F': true, 'SalesOrd:H': true
     };
 
@@ -99,6 +104,7 @@ define([
         { field: 'item',           label: 'Item' },
         { field: 'quantity',       label: 'Quantity' },
         { field: 'location',       label: 'Line Location' },
+        { field: 'isclosed',       label: 'Line Closed' },
         { field: FIELD.METHOD,     label: 'Sourcing Method' },
         { field: FIELD.FROM_LOC,   label: 'Source From Location' },
         { field: FIELD.QTY_TRANSFER, label: 'Qty to Transfer' }
@@ -125,6 +131,12 @@ define([
         // ----- DELETE -----
         if (context.type === T.DELETE) {
             blockDeleteIfActiveLinkedTOs(oldRec || rec);
+            return;
+        }
+
+        // ----- Native close/cancel actions -----
+        if (isCloseCancelEvent(context.type)) {
+            blockCloseCancelActionIfActiveLinkedTOs(rec || oldRec);
             return;
         }
 
@@ -511,8 +523,33 @@ define([
     function isCurrentUserAdministrator() {
         try {
             var user = runtime.getCurrentUser();
-            return String(user.role) === '3' || String(user.roleId || '').toLowerCase() === 'administrator';
+            if (String(user.role) === '3' || String(user.roleId || '').toLowerCase() === 'administrator') {
+                return true;
+            }
+
+            return roleHasSourcingAdminFlag(user.role);
         } catch (e) {
+            log.error('isCurrentUserAdministrator failed', e);
+            return false;
+        }
+    }
+
+    function roleHasSourcingAdminFlag(roleId) {
+        if (!roleId) return false;
+
+        try {
+            var look = search.lookupFields({
+                type: 'role',
+                id: roleId,
+                columns: [ROLE_SOURCING_ADMIN_FIELD]
+            });
+            return isTrueValue(look[ROLE_SOURCING_ADMIN_FIELD]);
+        } catch (e) {
+            log.error('roleHasSourcingAdminFlag lookup failed', {
+                roleId: roleId,
+                fieldId: ROLE_SOURCING_ADMIN_FIELD,
+                error: e.message || e
+            });
             return false;
         }
     }
@@ -540,10 +577,10 @@ define([
         log.debug('closeCheck:statuses', { oldStatus: oldStatus, newStatus: newStatus });
 
         // Check header-level status transition into closed-ish
-        var headerClosed = (oldStatus !== newStatus) && SO_CLOSED_STATUSES[newStatus];
+        var headerClosed = !SO_CLOSED_STATUSES[oldStatus] && SO_CLOSED_STATUSES[newStatus];
 
         // Check line-level: any locked line that got its "isclosed" checkbox flipped to T
-        var lineClosed = checkAnyLockedLineClosing(oldRec, newRec);
+        var lineClosed = checkAnyLinkedLineClosing(oldRec, newRec);
 
         if (headerClosed || lineClosed) {
             var blockingLines = getActiveLinkedTOLines(newRec);
@@ -553,10 +590,24 @@ define([
         }
     }
 
+    function isCloseCancelEvent(type) {
+        var text = String(type || '').toLowerCase();
+        return text === 'cancel' || text === 'close';
+    }
+
+    function blockCloseCancelActionIfActiveLinkedTOs(rec) {
+        var blockingLines = getActiveLinkedTOLines(rec);
+        if (blockingLines.length) {
+            throw new Error('Cannot close/cancel this SO: the following lines have active Transfer Orders that must be cancelled or operationally reversed first: ' + blockingLines.join('; '));
+        }
+    }
+
     /**
-     * Detect closure via line-level isclosed flag flipping to true on a locked line.
+     * Detect closure via line-level isclosed flag flipping to true on a linked line.
+     * NetSuite commonly returns checkbox values as T/F strings, so normalize them
+     * before comparing.
      */
-    function checkAnyLockedLineClosing(oldRec, newRec) {
+    function checkAnyLinkedLineClosing(oldRec, newRec) {
         try {
             var oldMap = buildLockedLineMap(oldRec);
             var newLineMap = buildLineIdMap(newRec);
@@ -566,12 +617,15 @@ define([
                 var newIdx = newLineMap[lineId];
                 if (newIdx === undefined) continue;
 
-                var oldClosed = oldRec.getSublistValue({ sublistId: SUBLIST, fieldId: 'isclosed', line: indexOfLineId(oldRec, lineId) });
+                var oldIdx = indexOfLineId(oldRec, lineId);
+                if (oldIdx < 0) continue;
+
+                var oldClosed = oldRec.getSublistValue({ sublistId: SUBLIST, fieldId: 'isclosed', line: oldIdx });
                 var newClosed = newRec.getSublistValue({ sublistId: SUBLIST, fieldId: 'isclosed', line: newIdx });
-                if (!oldClosed && newClosed) return true;
+                if (!isTrueValue(oldClosed) && isTrueValue(newClosed)) return true;
             }
         } catch (e) {
-            log.error('checkAnyLockedLineClosing failed', e);
+            log.error('checkAnyLinkedLineClosing failed', e);
         }
         return false;
     }
@@ -706,6 +760,12 @@ define([
     function hasNativePOValue(value) {
         return !(value === null || value === undefined || value === '' ||
             value === false || value === 'F' || value === 'false');
+    }
+
+    function isTrueValue(value) {
+        if (value === true) return true;
+        var text = String(value == null ? '' : value).toLowerCase();
+        return text === 't' || text === 'true' || text === 'yes' || text === '1';
     }
 
     // ---------- Sourcing engine ----------
