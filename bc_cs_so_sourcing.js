@@ -1225,7 +1225,7 @@ define(['N/url', 'N/currentRecord', 'N/ui/dialog', 'N/search', 'N/runtime'], fun
     function isCurrentUserSourcingAdminClient() {
         try {
             var user = runtime.getCurrentUser();
-            if (String(user.role) === '3' || String(user.roleId || '').toLowerCase() === 'administrator') return true;
+        //    if (String(user.role) === '3' || String(user.roleId || '').toLowerCase() === 'administrator') return true;
             return roleHasSourcingAdminFlagClient(user.role);
         } catch (e) {
             logErr('isCurrentUserSourcingAdminClient failed', e);
