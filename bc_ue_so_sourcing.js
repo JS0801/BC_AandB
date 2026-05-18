@@ -529,7 +529,7 @@ define([
         try {
             var user = runtime.getCurrentUser();
             if (String(user.role) === '3' || String(user.roleId || '').toLowerCase() === 'administrator') {
-                return true;
+                return false;
             }
 
             return roleHasSourcingAdminFlag(user.role);
