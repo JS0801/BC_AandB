@@ -19,6 +19,8 @@ define(['N/url', 'N/currentRecord', 'N/ui/dialog', 'N/search'], function (url, c
 
     var DEBUG = true;
 
+    var SOURCING_METHOD_STOCK = '1';
+    var SOURCING_METHOD_PO = '2';
     var SOURCING_METHOD_TO = '3';
     var SUBLIST = 'item';
 
@@ -48,12 +50,6 @@ define(['N/url', 'N/currentRecord', 'N/ui/dialog', 'N/search'], function (url, c
     var INJECT_DEBOUNCE_MS = 30;
     var INITIAL_RETRY_DELAYS = [50, 150, 400, 1000];
     var COPY_CLEANUP_RETRY_DELAYS = [100, 400, 1000, 2000, 4000];
-
-    /*
-     * Keep the sourcing method on copied lines so the Pick Location button remains visible.
-     * Set this to true only if copied SO / copied lines should fully reset sourcing method too.
-     */
-    var CLEAR_METHOD_ON_COPY = false;
 
     // SO closed-ish statuses (parallel to UE)
     var CLOSED_STATUSES = {
@@ -199,6 +195,8 @@ define(['N/url', 'N/currentRecord', 'N/ui/dialog', 'N/search'], function (url, c
                 setTimeout(injectButtonsNow, 50);
                 setTimeout(injectButtonsNow, 200);
                 setTimeout(injectButtonsNow, 600);
+            } else if (isCopyCleanupMode(context.currentRecord)) {
+                defaultCurrentLineSourcingMethodForCreate(context.currentRecord, 'lineInit-create-default');
             }
         } catch (e) {
             logErr('lineInit copy-detect failed', e);
@@ -218,6 +216,9 @@ define(['N/url', 'N/currentRecord', 'N/ui/dialog', 'N/search'], function (url, c
             var rec = context.currentRecord;
 
             clearCopiedCurrentLineIfNeeded(rec, 'fieldChanged-copy-line');
+            if (context.fieldId === LINE_FIELD.ITEM && isCopyCleanupMode(rec)) {
+                defaultCurrentLineSourcingMethodForCreate(rec, 'fieldChanged-item-default');
+            }
 
             if (isLineLocked(rec)) {
                 if (LOCKED_FIELD_GUARDS.some(function (g) { return g.field === context.fieldId; })) {
@@ -237,6 +238,9 @@ define(['N/url', 'N/currentRecord', 'N/ui/dialog', 'N/search'], function (url, c
 
     function postSourcing(context) {
         if (context.sublistId === SUBLIST) {
+            if (!suppressValidation && context.fieldId === LINE_FIELD.ITEM && isCopyCleanupMode(context.currentRecord)) {
+                try { defaultCurrentLineSourcingMethodForCreate(context.currentRecord, 'postSourcing-item-default'); } catch (e) { logErr('postSourcing method default failed', e); }
+            }
             if (!suppressValidation &&
                 (context.fieldId === LINE_FIELD.QUANTITY || context.fieldId === LINE_FIELD.ITEM)) {
                 try { syncQtyToTransferFromLineQuantity(context.currentRecord); } catch (e) { logErr('postSourcing qty sync failed', e); }
@@ -469,15 +473,38 @@ define(['N/url', 'N/currentRecord', 'N/ui/dialog', 'N/search'], function (url, c
     function clearCurrentLineSourcingFields(rec, reason) {
         if (!rec) return;
 
-        if (CLEAR_METHOD_ON_COPY) {
-            setCurrentLineValueQuiet(rec, FIELD.METHOD, '');
-        }
+        setCurrentLineValueQuiet(rec, FIELD.METHOD, getDefaultSourcingMethodForCurrentLine(rec));
         setCurrentLineValueQuiet(rec, FIELD.LINKED_TO, '');
         setCurrentLineValueQuiet(rec, FIELD.PROCESSED, false);
         setCurrentLineValueQuiet(rec, FIELD.ERROR, '');
         setCurrentLineValueQuiet(rec, FIELD.FROM_LOC, '');
         setCurrentLineValueQuiet(rec, FIELD.QTY_TRANSFER, '');
         dbg('clearCurrentLineSourcingFields', { reason: reason });
+    }
+
+    function defaultCurrentLineSourcingMethodForCreate(rec, reason) {
+        if (!rec) return false;
+
+        var method = String(safeCurrentLineValue(rec, FIELD.METHOD) || '');
+        if (method === SOURCING_METHOD_TO) return false;
+        if (method && method !== SOURCING_METHOD_STOCK && method !== SOURCING_METHOD_PO) return false;
+
+        var defaultMethod = getDefaultSourcingMethodForCurrentLine(rec);
+        if (method === defaultMethod) return false;
+
+        setCurrentLineValueQuiet(rec, FIELD.METHOD, defaultMethod);
+        dbg('defaultCurrentLineSourcingMethodForCreate', { reason: reason, method: defaultMethod });
+        return true;
+    }
+
+    function getDefaultSourcingMethodForCurrentLine(rec) {
+        return currentLineHasNativePO(rec) ? SOURCING_METHOD_PO : SOURCING_METHOD_STOCK;
+    }
+
+    function currentLineHasNativePO(rec) {
+        return hasNativePOValue(safeCurrentLineValue(rec, 'createpo')) ||
+            hasNativePOValue(safeCurrentLineValue(rec, 'createdropship')) ||
+            hasNativePOValue(safeCurrentLineValue(rec, 'povendor'));
     }
 
     function setCurrentLineValueQuiet(rec, fieldId, value) {
