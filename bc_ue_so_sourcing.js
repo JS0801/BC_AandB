@@ -497,14 +497,16 @@ define([
         var locChanged = String(oldLoc || '') !== String(newLoc || '');
         if (!subChanged && !locChanged) return;
 
-        var blockingLines = getActiveLinkedTOLines(newRec);
-        if (!blockingLines.length) return;
-
         if (subChanged) {
+            var blockingLines = getActiveLinkedTOLines(newRec);
+            if (!blockingLines.length) return;
             throw new Error('Cannot change Subsidiary: this SO has active linked Transfer Orders. Cancel or operationally reverse them first: ' + blockingLines.join('; '));
         }
         if (locChanged) {
-            throw new Error('Cannot change header Location: this SO has active linked Transfer Orders. Cancel or operationally reverse them first: ' + blockingLines.join('; '));
+            var headerLocationLines = getActiveLinkedTOLines(newRec, { headerLocationOnly: true });
+            if (headerLocationLines.length) {
+                throw new Error('Cannot change header Location: this SO has active linked Transfer Orders on lines that use the header Location. Cancel or operationally reverse them first: ' + headerLocationLines.join('; '));
+            }
         }
     }
 
@@ -650,12 +652,17 @@ define([
         }
     }
 
-    function getActiveLinkedTOLines(rec) {
+    function getActiveLinkedTOLines(rec, options) {
+        options = options || {};
         var blocking = [];
         var lineCount = rec.getLineCount({ sublistId: SUBLIST });
         for (var i = 0; i < lineCount; i++) {
             var linkedTo = rec.getSublistValue({ sublistId: SUBLIST, fieldId: FIELD.LINKED_TO, line: i });
             if (!linkedTo) continue;
+            if (options.headerLocationOnly) {
+                var lineLocation = rec.getSublistValue({ sublistId: SUBLIST, fieldId: 'location', line: i });
+                if (lineLocation) continue;
+            }
 
             try {
                 var look = search.lookupFields({
@@ -784,14 +791,6 @@ define([
         var collected = collectQualifyingLines(so, headerLocation);
         var qualifying = collected.lines;
         var configSkipped = collected.skipped;
-        if (!headerLocation && qualifying.length) {
-            qualifying.forEach(function (line) {
-                line.skip = true;
-                line.error = 'Transfer Order sourcing skipped: SO header Location is required as the TO destination.';
-                configSkipped.push(line);
-            });
-            qualifying = [];
-        }
         if (!qualifying.length) {
             if (configSkipped.length) writebackResults(so, [], [], configSkipped);
             log.debug('engine:noQualifyingLines', { soId: soId, skipped: configSkipped.length });
@@ -803,20 +802,22 @@ define([
         var skipped = configSkipped.slice(0);
         checked.forEach(function (line) {
             if (line.skip) { skipped.push(line); return; }
-            if (!groups[line.fromLoc]) groups[line.fromLoc] = [];
-            groups[line.fromLoc].push(line);
+            var groupKey = line.fromLoc + '|' + line.destLoc;
+            if (!groups[groupKey]) groups[groupKey] = { fromLoc: line.fromLoc, destLoc: line.destLoc, lines: [] };
+            groups[groupKey].lines.push(line);
         });
 
         var success = [];
         var failed = [];
-        Object.keys(groups).forEach(function (fromLocId) {
-            var grp = groups[fromLocId];
+        Object.keys(groups).forEach(function (groupKey) {
+            var group = groups[groupKey];
+            var grp = group.lines;
             try {
-                var toId = createTransferOrder(subsidiary, fromLocId, headerLocation, grp, tranId, soId);
+                var toId = createTransferOrder(subsidiary, group.fromLoc, group.destLoc, grp, tranId, soId);
                 grp.forEach(function (l) { success.push({ lineIdx: l.lineIdx, toId: toId }); });
-                log.audit('engine:toCreated', { fromLocId: fromLocId, toId: toId, lines: grp.length });
+                log.audit('engine:toCreated', { fromLocId: group.fromLoc, toLocId: group.destLoc, toId: toId, lines: grp.length });
             } catch (e) {
-                log.error('engine:toCreateFailed', { fromLocId: fromLocId, error: e.message });
+                log.error('engine:toCreateFailed', { fromLocId: group.fromLoc, toLocId: group.destLoc, error: e.message });
                 grp.forEach(function (l) { failed.push({ lineIdx: l.lineIdx, error: 'TO creation failed: ' + e.message }); });
             }
         });
@@ -850,10 +851,20 @@ define([
             var qtyRequired = getQtyRequired(so, i);
             if (qtyRequired <= 0) continue;
 
+            var destLoc = so.getSublistValue({ sublistId: SUBLIST, fieldId: 'location', line: i }) || headerLocation;
+            if (!destLoc) {
+                skipped.push({
+                    lineIdx: i,
+                    lineNum: i + 1,
+                    error: 'Transfer Order sourcing skipped: destination Location is not selected on the line or SO header.'
+                });
+                continue;
+            }
+
             lines.push({
                 lineIdx: i, lineNum: i + 1,
                 item: item, fromLoc: fromLoc,
-                destLoc: so.getSublistValue({ sublistId: SUBLIST, fieldId: 'location', line: i }) || headerLocation,
+                destLoc: destLoc,
                 qtyRequired: qtyRequired,
                 units: so.getSublistValue({ sublistId: SUBLIST, fieldId: 'units', line: i })
             });
@@ -872,6 +883,11 @@ define([
         });
 
         var availMap = {};
+        var demandMap = {};
+        lines.forEach(function (l) {
+            var key = l.item + '|' + l.fromLoc;
+            demandMap[key] = (demandMap[key] || 0) + parseFloat(l.qtyRequired || '0');
+        });
         if (itemIds.length && locIds.length) {
             try {
                 var s = search.create({
@@ -895,10 +911,12 @@ define([
             }
         }
         return lines.map(function (l) {
-            var avail = availMap[l.item + '|' + l.fromLoc] || 0;
-            if (avail < l.qtyRequired) {
+            var key = l.item + '|' + l.fromLoc;
+            var avail = availMap[key] || 0;
+            var requested = demandMap[key] || 0;
+            if (avail < requested) {
                 l.skip = true;
-                l.error = 'Availability dropped: requested ' + l.qtyRequired + ', available ' + avail + ' at source location at time of TO creation.';
+                l.error = 'Availability dropped: combined requested qty ' + requested + ' for this item/source location exceeds available qty ' + avail + ' at time of TO creation.';
             }
             return l;
         });
