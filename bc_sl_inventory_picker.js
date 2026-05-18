@@ -3,15 +3,17 @@
  * @NScriptType Suitelet
  * @NModuleScope Public
  *
- * BC Inventory Picker Suitelet (v3)
+ * BC Inventory Picker Suitelet (v4 - SuiteQL)
+ *
+ * Uses SuiteQL against aggregateItemLocation for fast, accurate per-location
+ * inventory data (on hand / available / committed / on order) instead of an
+ * inventorybalance saved search.
  *
  * Features:
- *   - Pre-selects a row if selectedLocId is passed (so user sees the current
- *     line's source location highlighted)
- *   - Read-only mode (readOnly=T) for view-mode access: no radio buttons,
- *     no Save, just a Close button — informational only
- *   - Clear Selection lets the user de-select, but the SO save validation
- *     requires a source location while Sourcing Method = Transfer Order
+ *   - Pre-selects a row if selectedLocId is passed
+ *   - Read-only mode (readOnly=T): no radios, no Save, just Close
+ *   - Excludes the SO destination location
+ *   - Filters to locations in the SO subsidiary, active only
  *
  * URL params:
  *   itemId         (required) item internal ID
@@ -23,13 +25,7 @@
  *   soId           (optional, audit only)
  *   lineId         (optional, round-trip identifier)
  */
-define(['N/search', 'N/log'], function (search, log) {
-
-    var INVBAL_FIELD = {
-        AVAILABLE: 'available',
-        ON_HAND: 'onhand',
-        COMMITTED: 'invnumcommitted'
-    };
+define(['N/query', 'N/search', 'N/log'], function (query, search, log) {
 
     function onRequest(context) {
         var req = context.request;
@@ -56,7 +52,7 @@ define(['N/search', 'N/log'], function (search, log) {
         try {
             rows = getInventoryRows(itemId, subsidiaryId, destLocationId, qtyRequired);
         } catch (e) {
-            log.error('Picker query failed', e);
+            log.error({ title: 'Picker SuiteQL failed', details: e });
             res.write({ output: renderError('Could not load inventory: ' + e.message) });
             return;
         }
@@ -77,67 +73,96 @@ define(['N/search', 'N/log'], function (search, log) {
 
     function lookupItem(itemId) {
         try {
-            var fields = search.lookupFields({ type: 'item', id: itemId, columns: ['itemid', 'displayname', 'type'] });
+            var fields = search.lookupFields({
+                type: 'item',
+                id: itemId,
+                columns: ['itemid', 'displayname', 'type']
+            });
             return {
                 id: itemId,
                 itemid: fields.itemid || '',
                 displayname: fields.displayname || '',
                 type: fields.type && fields.type[0] ? fields.type[0].text : ''
             };
-        } catch (e) { return { id: itemId, itemid: '', displayname: '', type: '' }; }
+        } catch (e) {
+            return { id: itemId, itemid: '', displayname: '', type: '' };
+        }
     }
 
     function lookupLocation(locId) {
         try {
             var fields = search.lookupFields({ type: 'location', id: locId, columns: ['name'] });
             return fields.name || '';
-        } catch (e) { return ''; }
+        } catch (e) {
+            return '';
+        }
     }
 
+    /**
+     * Pull per-location inventory for an item via SuiteQL.
+     * Filters: item, active locations only, subsidiary match
+     * (via locationSubsidiaryMap so OneWorld multi-subsidiary locations work).
+     */
     function getInventoryRows(itemId, subsidiaryId, destLocationId, qtyRequired) {
-        return runInventoryRows(buildInventoryFilters(itemId, subsidiaryId), destLocationId, qtyRequired);
-    }
+        var sql =
+            'SELECT ' +
+            '    ail.location              AS loc_id, ' +
+            '    BUILTIN.DF(ail.location)  AS loc_name, ' +
+            '    NVL(ail.quantityonhand, 0)    AS on_hand, ' +
+            '    NVL(ail.quantityavailable, 0) AS available, ' +
+            '    NVL(ail.quantitycommitted, 0) AS committed, ' +
+            '    NVL(ail.quantityonorder, 0)   AS on_order ' +
+            'FROM aggregateItemLocation ail ' +
+            'INNER JOIN location loc ON loc.id = ail.location ' +
+            'WHERE ail.item = ? ' +
+            '  AND loc.isinactive = \'F\' ' +
+            '  AND EXISTS ( ' +
+            '       SELECT 1 FROM locationSubsidiaryMap lsm ' +
+            '       WHERE lsm.location = loc.id ' +
+            '         AND lsm.subsidiary = ? ' +
+            '  ) ' +
+            'ORDER BY loc_name';
 
-    function buildInventoryFilters(itemId, subsidiaryId) {
-        return [
-            ['item', 'anyof', itemId], 'AND',
-            ['location.subsidiary', 'anyof', subsidiaryId], 'AND',
-            ['location.isinactive', 'is', 'F']
-        ];
-    }
+        var resultSet = query.runSuiteQL({
+            query: sql,
+            params: [itemId, subsidiaryId]
+        });
 
-    function runInventoryRows(filters, destLocationId, qtyRequired) {
-        var columns = [
-            search.createColumn({ name: 'location', summary: "GROUP" }),
-            search.createColumn({ name: INVBAL_FIELD.AVAILABLE, summary: "SUM" }),
-            search.createColumn({ name: INVBAL_FIELD.ON_HAND, summary: "SUM" }),
-            search.createColumn({ name: INVBAL_FIELD.COMMITTED, summary: "SUM" })
-        ];
-
+        var raw = resultSet.asMappedResults();
         var rows = [];
-        var s = search.create({ type: 'inventorybalance', filters: filters, columns: columns });
 
-        s.run().each(function (r) {
-            var locId = r.getValue({ name: 'location', summary: "GROUP" });
-            var locName = r.getText({ name: 'location', summary: "GROUP" });
-            var onHand = parseFloat(r.getValue({ name: INVBAL_FIELD.ON_HAND, summary: "SUM" }) || '0');
-            var available = parseFloat(r.getValue({ name: INVBAL_FIELD.AVAILABLE, summary: "SUM" }) || '0');
-            var committed = parseFloat(r.getValue({ name: INVBAL_FIELD.COMMITTED, summary: "SUM" }) || '0');
+        for (var i = 0; i < raw.length; i++) {
+            var r = raw[i];
+            var locId = r.loc_id;
+            var locName = r.loc_name || '';
+            var onHand = parseFloat(r.on_hand || 0);
+            var available = parseFloat(r.available || 0);
+            var committed = parseFloat(r.committed || 0);
+            var onOrder = parseFloat(r.on_order || 0);
 
             var isDest = (String(locId) === String(destLocationId));
             var sufficient = (available >= qtyRequired);
             var status = 'Available';
             var disabled = false;
-            if (isDest) { status = 'Destination Location'; disabled = true; }
-            else if (!sufficient) { status = 'Insufficient Available Qty'; disabled = true; }
+            if (isDest) {
+                status = 'Destination Location';
+                disabled = true;
+            } else if (!sufficient) {
+                status = 'Insufficient Available Qty';
+                disabled = true;
+            }
 
             rows.push({
-                locId: locId, locName: locName,
-                onHand: onHand, available: available, committed: committed,
-                status: status, disabled: disabled
+                locId: locId,
+                locName: locName,
+                onHand: onHand,
+                available: available,
+                committed: committed,
+                onOrder: onOrder,
+                status: status,
+                disabled: disabled
             });
-            return true;
-        });
+        }
 
         rows.sort(function (a, b) {
             if (a.disabled !== b.disabled) return a.disabled ? 1 : -1;
@@ -197,13 +222,14 @@ define(['N/search', 'N/log'], function (search, log) {
                 '<td class="num">' + formatNum(r.onHand) + '</td>',
                 '<td class="' + availClass + '">' + formatNum(r.available) + '</td>',
                 '<td class="num">' + formatNum(r.committed) + '</td>',
+                '<td class="num">' + formatNum(r.onOrder) + '</td>',
                 '<td class="status ' + (r.disabled ? 'status-disabled' : 'status-ok') + '">' + escapeHtml(r.status) + '</td>',
                 '</tr>'
             ].join('');
         }).join('');
 
         if (!rowHtml) {
-            rowHtml = '<tr><td colspan="6" class="empty">No locations found for this item in the current subsidiary.</td></tr>';
+            rowHtml = '<tr><td colspan="7" class="empty">No locations found for this item in the current subsidiary.</td></tr>';
         }
 
         var itemLabel = itemInfo.itemid
@@ -303,6 +329,7 @@ define(['N/search', 'N/log'], function (search, log) {
             '        <th class="num">Qty On Hand</th>',
             '        <th class="num">Qty Available</th>',
             '        <th class="num">Qty Committed</th>',
+            '        <th class="num">Qty On Order</th>',
             '        <th>Status</th>',
             '      </tr></thead>',
             '      <tbody>', rowHtml, '</tbody>',
