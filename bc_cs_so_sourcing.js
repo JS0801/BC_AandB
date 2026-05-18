@@ -7,14 +7,12 @@
  *
  * Capabilities:
  *   - Inject "Pick Location" buttons into the item sublist DOM
- *   - Manage method/qty/from-location field interactions
+ *   - Manage method/from-location interactions and default transfer qty from SO line qty
  *   - Open inventory picker popup, receive selection
  *   - Capture a SNAPSHOT of locked line values on pageInit so saveRecord can
  *     compare current values and BLOCK before round-tripping to the server
  *   - Block header subsidiary / location changes when linked TOs exist
  *   - Block close/cancel attempts client-side too
- *   - On copy/create mode, sweep stale sourcing/linkage fields off every line
- *     BEFORE snapshotting, so the new record starts clean.
  */
 define(['N/url', 'N/currentRecord', 'N/ui/dialog', 'N/search'], function (url, currentRecord, dialog, search) {
 
@@ -40,9 +38,7 @@ define(['N/url', 'N/currentRecord', 'N/ui/dialog', 'N/search'], function (url, c
     var LINE_FIELD = {
         ITEM: 'item',
         QUANTITY: 'quantity',
-        LOCATION: 'location',
-        QTY_BACKORDERED: 'quantitybackordered',
-        QTY_AVAILABLE: 'quantityavailable'
+        LOCATION: 'location'
     };
 
     var BTN_CLASS = 'bc-pick-loc-btn';
@@ -110,16 +106,6 @@ define(['N/url', 'N/currentRecord', 'N/ui/dialog', 'N/search'], function (url, c
 
         var rec = currentRecord.get();
 
-        // In copy/create mode, any FROM_LOC / QTY_TRANSFER / LINKED_TO /
-        // PROCESSED / ERROR values carried over from the source record are
-        // stale and must not survive into the new SO. Clear them across all
-        // lines BEFORE snapshotting, so the snapshot doesn't treat them as
-        // locked and so saveRecord doesn't compare against stale values.
-        if (pageMode === 'copy' || pageMode === 'create') {
-            try { clearSourcingFieldsAllLines(rec); }
-            catch (e) { logErr('pageInit:clearSourcingFieldsAllLines failed', e); }
-        }
-
         // Snapshot original state for diff-based blocks
         try {
             lockedSnapshot = buildLockedSnapshot(rec);
@@ -173,11 +159,9 @@ define(['N/url', 'N/currentRecord', 'N/ui/dialog', 'N/search'], function (url, c
         try {
             var rec = context.currentRecord;
 
-            // Detect line-copy: a current line with no database `line` id is a
-            // freshly added or copied row. In create/copy mode, scrub sourcing
-            // fields regardless of whether processed/linked_to carried over —
-            // some custom field copy settings may not bring those flags along,
-            // but FROM_LOC still gets copied if its field is set to copy.
+            // Detect line-copy: a current line with no database `line` id but
+            // carrying processed=true or a linked_to value is a fresh copy of
+            // a locked line. Clean it immediately so the user re-picks.
             var dbLineId = null;
             try {
                 dbLineId = rec.getCurrentSublistValue({ sublistId: SUBLIST, fieldId: 'line' });
@@ -185,17 +169,11 @@ define(['N/url', 'N/currentRecord', 'N/ui/dialog', 'N/search'], function (url, c
 
             if (!dbLineId) {
                 var processed = rec.getCurrentSublistValue({ sublistId: SUBLIST, fieldId: FIELD.PROCESSED });
-                var linkedTo  = rec.getCurrentSublistValue({ sublistId: SUBLIST, fieldId: FIELD.LINKED_TO });
-                var fromLoc   = rec.getCurrentSublistValue({ sublistId: SUBLIST, fieldId: FIELD.FROM_LOC });
-                var qtyXfer   = rec.getCurrentSublistValue({ sublistId: SUBLIST, fieldId: FIELD.QTY_TRANSFER });
-                var errVal    = rec.getCurrentSublistValue({ sublistId: SUBLIST, fieldId: FIELD.ERROR });
+                var linkedTo = rec.getCurrentSublistValue({ sublistId: SUBLIST, fieldId: FIELD.LINKED_TO });
 
-                if (processed || linkedTo || fromLoc || qtyXfer || errVal) {
-                    dbg('lineInit:newLine:wipeSourcingFields', {
-                        processed: !!processed, linkedTo: !!linkedTo,
-                        fromLoc: !!fromLoc, qtyXfer: !!qtyXfer, errVal: !!errVal
-                    });
-                    // Clear linkage flags
+                if (processed || linkedTo) {
+                    dbg('lineInit:copyDetected:wipe');
+                    // Clear linkage fields
                     rec.setCurrentSublistValue({ sublistId: SUBLIST, fieldId: FIELD.LINKED_TO,    value: '',    ignoreFieldChange: true });
                     rec.setCurrentSublistValue({ sublistId: SUBLIST, fieldId: FIELD.PROCESSED,    value: false, ignoreFieldChange: true });
                     rec.setCurrentSublistValue({ sublistId: SUBLIST, fieldId: FIELD.ERROR,        value: '',    ignoreFieldChange: true });
@@ -238,10 +216,8 @@ define(['N/url', 'N/currentRecord', 'N/ui/dialog', 'N/search'], function (url, c
             if (context.fieldId === FIELD.METHOD) {
                 handleMethodChange(rec);
                 injectButtonsWithRetry();
-            } else if (context.fieldId === LINE_FIELD.QUANTITY ||
-                context.fieldId === LINE_FIELD.ITEM ||
-                context.fieldId === LINE_FIELD.LOCATION) {
-                syncQtyToTransferFromLineAvailability(rec);
+            } else if (context.fieldId === LINE_FIELD.QUANTITY) {
+                syncQtyToTransferFromLineQuantity(rec);
             }
         } catch (e) {
             logErr('fieldChanged failed', e, { field: context.fieldId });
@@ -251,9 +227,8 @@ define(['N/url', 'N/currentRecord', 'N/ui/dialog', 'N/search'], function (url, c
     function postSourcing(context) {
         if (context.sublistId === SUBLIST) {
             if (context.fieldId === LINE_FIELD.QUANTITY ||
-                context.fieldId === LINE_FIELD.ITEM ||
-                context.fieldId === LINE_FIELD.LOCATION) {
-                try { syncQtyToTransferFromLineAvailability(context.currentRecord); } catch (e) { logErr('postSourcing qty sync failed', e); }
+                context.fieldId === LINE_FIELD.ITEM) {
+                try { syncQtyToTransferFromLineQuantity(context.currentRecord); } catch (e) { logErr('postSourcing qty sync failed', e); }
             }
             scheduleInject(INJECT_DEBOUNCE_MS);
         }
@@ -365,52 +340,6 @@ define(['N/url', 'N/currentRecord', 'N/ui/dialog', 'N/search'], function (url, c
             logErr('saveRecord check failed', e);
             return true; // Fail open — UE will catch
         }
-    }
-
-    // ---------------- Copy/create cleanup ----------------
-
-    /**
-     * Walk every committed sublist line and clear sourcing/linkage fields
-     * that should not survive a copy or create-from-template. Uses
-     * selectLine/commitLine so values are persisted into the working
-     * record. Skips rows that already have nothing to clear to avoid
-     * needlessly dirtying the form.
-     */
-    function clearSourcingFieldsAllLines(rec) {
-        var lineCount;
-        try { lineCount = rec.getLineCount({ sublistId: SUBLIST }); } catch (e) { return; }
-        if (!lineCount || lineCount <= 0) return;
-
-        var cleared = 0;
-        for (var i = 0; i < lineCount; i++) {
-            var fromLoc, qtyXfer, linkedTo, processed, errVal;
-            try {
-                fromLoc   = rec.getSublistValue({ sublistId: SUBLIST, fieldId: FIELD.FROM_LOC,     line: i });
-                qtyXfer   = rec.getSublistValue({ sublistId: SUBLIST, fieldId: FIELD.QTY_TRANSFER, line: i });
-                linkedTo  = rec.getSublistValue({ sublistId: SUBLIST, fieldId: FIELD.LINKED_TO,    line: i });
-                processed = rec.getSublistValue({ sublistId: SUBLIST, fieldId: FIELD.PROCESSED,    line: i });
-                errVal    = rec.getSublistValue({ sublistId: SUBLIST, fieldId: FIELD.ERROR,        line: i });
-            } catch (eRead) {
-                logErr('clearSourcingFieldsAllLines:read failed', eRead, { line: i });
-                continue;
-            }
-
-            if (!fromLoc && !qtyXfer && !linkedTo && !processed && !errVal) continue;
-
-            try {
-                rec.selectLine({ sublistId: SUBLIST, line: i });
-                rec.setCurrentSublistValue({ sublistId: SUBLIST, fieldId: FIELD.FROM_LOC,     value: '',    ignoreFieldChange: true });
-                rec.setCurrentSublistValue({ sublistId: SUBLIST, fieldId: FIELD.QTY_TRANSFER, value: '',    ignoreFieldChange: true });
-                rec.setCurrentSublistValue({ sublistId: SUBLIST, fieldId: FIELD.LINKED_TO,    value: '',    ignoreFieldChange: true });
-                rec.setCurrentSublistValue({ sublistId: SUBLIST, fieldId: FIELD.PROCESSED,    value: false, ignoreFieldChange: true });
-                rec.setCurrentSublistValue({ sublistId: SUBLIST, fieldId: FIELD.ERROR,        value: '',    ignoreFieldChange: true });
-                rec.commitLine({ sublistId: SUBLIST });
-                cleared++;
-            } catch (eWrite) {
-                logErr('clearSourcingFieldsAllLines:write failed', eWrite, { line: i });
-            }
-        }
-        dbg('clearSourcingFieldsAllLines:done', { totalLines: lineCount, cleared: cleared });
     }
 
     // ---------------- Validation helpers ----------------
@@ -531,14 +460,14 @@ define(['N/url', 'N/currentRecord', 'N/ui/dialog', 'N/search'], function (url, c
     function handleMethodChange(rec) {
         var method = String(rec.getCurrentSublistValue({ sublistId: SUBLIST, fieldId: FIELD.METHOD }) || '');
         if (method === SOURCING_METHOD_TO) {
-            syncQtyToTransferFromLineAvailability(rec);
+            syncQtyToTransferFromLineQuantity(rec);
         } else {
             rec.setCurrentSublistValue({ sublistId: SUBLIST, fieldId: FIELD.FROM_LOC, value: '', ignoreFieldChange: true });
             rec.setCurrentSublistValue({ sublistId: SUBLIST, fieldId: FIELD.QTY_TRANSFER, value: '', ignoreFieldChange: true });
         }
     }
 
-    function syncQtyToTransferFromLineAvailability(rec) {
+    function syncQtyToTransferFromLineQuantity(rec) {
         if (!rec || isLineLocked(rec)) return;
 
         var method = String(rec.getCurrentSublistValue({ sublistId: SUBLIST, fieldId: FIELD.METHOD }) || '');
@@ -615,7 +544,7 @@ define(['N/url', 'N/currentRecord', 'N/ui/dialog', 'N/search'], function (url, c
 
         if (method !== SOURCING_METHOD_TO) { dialog.alert({ title: 'Set Sourcing Method', message: 'Set Sourcing Method to "Transfer Order" first.' }); return false; }
         if (!item) { dialog.alert({ title: 'Item Required', message: 'Select an item first.' }); return false; }
-        if (!qtyRequired || qtyRequired <= 0) { dialog.alert({ title: 'Qty Required', message: 'Line has no Qty to Transfer, backordered qty, or line quantity.' }); return false; }
+        if (!qtyRequired || qtyRequired <= 0) { dialog.alert({ title: 'Qty Required', message: 'Line has no Qty to Transfer or line quantity.' }); return false; }
         if (!destLoc) { dialog.alert({ title: 'Destination Location Required', message: 'Set a Location on this line or on the SO header.' }); return false; }
         if (!subsidiary) { dialog.alert({ title: 'Subsidiary Required', message: 'The SO must have a subsidiary.' }); return false; }
         return true;
@@ -672,33 +601,8 @@ define(['N/url', 'N/currentRecord', 'N/ui/dialog', 'N/search'], function (url, c
     }
 
     function calculateCurrentQtyToTransfer(rec) {
-        var backordered = getCurrentNumericValue(rec, LINE_FIELD.QTY_BACKORDERED);
-        if (backordered !== null && backordered > 0) return backordered;
-
         var ordered = getCurrentNumericValue(rec, LINE_FIELD.QUANTITY);
-        if (ordered === null || ordered <= 0) return 0;
-
-        var available = getCurrentAvailableQty(rec);
-        if (available !== null) {
-            var shortage = ordered - available;
-            return shortage > 0 ? shortage : 0;
-        }
-
-        return ordered;
-    }
-
-    function getCurrentAvailableQty(rec) {
-        var fieldIds = [
-            LINE_FIELD.QTY_AVAILABLE,
-            'quantityavailablebaseunit',
-            'quantityavailablebase'
-        ];
-
-        for (var i = 0; i < fieldIds.length; i++) {
-            var value = getCurrentNumericValue(rec, fieldIds[i]);
-            if (value !== null) return value;
-        }
-        return null;
+        return ordered !== null && ordered > 0 ? ordered : 0;
     }
 
     function getCurrentNumericValue(rec, fieldId) {
