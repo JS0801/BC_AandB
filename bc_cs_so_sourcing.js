@@ -252,6 +252,16 @@ define(['N/url', 'N/currentRecord', 'N/ui/dialog', 'N/search'], function (url, c
         if (suppressValidation) return true;
         if (context.sublistId !== SUBLIST) return true;
         try {
+            /*
+             * This is the most reliable hook in some NetSuite transaction UIs:
+             * copied line-level custom fields may not accept or keep changes made
+             * during pageInit, but they do clear when the copied line is committed.
+             */
+            if (clearCopiedCurrentLineIfNeeded(context.currentRecord, 'validateLine-copy-cleanup', true)) {
+                scheduleInject(INJECT_DEBOUNCE_MS);
+                return true;
+            }
+
             var ok = validateCurrentLineSourcingRules(context.currentRecord);
             if (ok) scheduleInject(INJECT_DEBOUNCE_MS);
             return ok;
@@ -408,15 +418,14 @@ define(['N/url', 'N/currentRecord', 'N/ui/dialog', 'N/search'], function (url, c
         return cleared;
     }
 
-    function clearCopiedCurrentLineIfNeeded(rec, reason) {
-        if (!rec || copyCleanupInProgress || isCopyMode()) return false;
+    function clearCopiedCurrentLineIfNeeded(rec, reason, allowCopyMode) {
+        if (!rec || copyCleanupInProgress) return false;
+        if (isCopyMode() && !allowCopyMode) return false;
 
-        var processed = safeCurrentLineValue(rec, FIELD.PROCESSED);
-        var linkedTo = safeCurrentLineValue(rec, FIELD.LINKED_TO);
-        if (!isPopulated(processed) && !isPopulated(linkedTo)) return false;
+        if (!currentLineHasCopiedSourcingResidue(rec)) return false;
 
         var lineId = getCurrentLineIdClient(rec);
-        if (lineId && initialLineIds && initialLineIds[lineId]) {
+        if (!isCopyMode() && lineId && initialLineIds && initialLineIds[lineId]) {
             return false;
         }
 
@@ -431,6 +440,14 @@ define(['N/url', 'N/currentRecord', 'N/ui/dialog', 'N/search'], function (url, c
             isPopulated(safeLineValue(rec, FIELD.ERROR, lineIdx)) ||
             isPopulated(safeLineValue(rec, FIELD.FROM_LOC, lineIdx)) ||
             isPopulated(safeLineValue(rec, FIELD.QTY_TRANSFER, lineIdx));
+    }
+
+    function currentLineHasCopiedSourcingResidue(rec) {
+        return isPopulated(safeCurrentLineValue(rec, FIELD.LINKED_TO)) ||
+            isPopulated(safeCurrentLineValue(rec, FIELD.PROCESSED)) ||
+            isPopulated(safeCurrentLineValue(rec, FIELD.ERROR)) ||
+            isPopulated(safeCurrentLineValue(rec, FIELD.FROM_LOC)) ||
+            isPopulated(safeCurrentLineValue(rec, FIELD.QTY_TRANSFER));
     }
 
     function clearCurrentLineSourcingFields(rec, reason) {
