@@ -78,7 +78,10 @@ define(['N/url', 'N/currentRecord', 'N/ui/dialog', 'N/search', 'N/runtime'], fun
         'Partially Fulfilled': true,
         'Pending Receipt/Partially Fulfilled': true,
         'Pending Receipt': true,
-        'Received': true
+        'Received': true,
+        'closed': true,
+        'closedOrder': true,
+        'Closed': true
     };
 
     var CANCELLED_TO_STATUSES = {
@@ -325,18 +328,26 @@ define(['N/url', 'N/currentRecord', 'N/ui/dialog', 'N/search', 'N/runtime'], fun
                 var closing = String(originalHeader.status || '') !== String(newStatus || '') && CLOSED_STATUSES[newStatus];
 
                 if (subChanged || locChanged || closing) {
-                    var activeLinked = getActiveLinkedTOLinesClient(rec);
-                    if (activeLinked.length && subChanged) {
-                        dialog.alert({ title: 'Cannot Change Subsidiary', message: 'This SO has active linked Transfer Orders. Cancel or operationally reverse them first: ' + activeLinked.join('; ') });
-                        return false;
+                    if (subChanged) {
+                        var activeLinkedForSub = getActiveLinkedTOLinesClient(rec);
+                        if (activeLinkedForSub.length) {
+                            dialog.alert({ title: 'Cannot Change Subsidiary', message: 'This SO has active linked Transfer Orders. Cancel or operationally reverse them first: ' + activeLinkedForSub.join('; ') });
+                            return false;
+                        }
                     }
-                    if (activeLinked.length && locChanged) {
-                        dialog.alert({ title: 'Cannot Change Header Location', message: 'This SO has active linked Transfer Orders. Cancel or operationally reverse them first: ' + activeLinked.join('; ') });
-                        return false;
+                    if (locChanged) {
+                        var activeLinkedForHeaderLoc = getActiveLinkedTOLinesClient(rec, { headerLocationOnly: true });
+                        if (activeLinkedForHeaderLoc.length) {
+                            dialog.alert({ title: 'Cannot Change Header Location', message: 'This SO has active linked Transfer Orders on lines that use the header Location. Cancel or operationally reverse them first: ' + activeLinkedForHeaderLoc.join('; ') });
+                            return false;
+                        }
                     }
-                    if (activeLinked.length && closing) {
-                        dialog.alert({ title: 'Cannot Close/Cancel SO', message: 'This SO has active linked Transfer Orders. Cancel or operationally reverse them first: ' + activeLinked.join('; ') });
-                        return false;
+                    if (closing) {
+                        var activeLinkedForClose = getActiveLinkedTOLinesClient(rec);
+                        if (activeLinkedForClose.length) {
+                            dialog.alert({ title: 'Cannot Close/Cancel SO', message: 'This SO has active linked Transfer Orders. Cancel or operationally reverse them first: ' + activeLinkedForClose.join('; ') });
+                            return false;
+                        }
                     }
                 }
             }
@@ -1066,7 +1077,8 @@ define(['N/url', 'N/currentRecord', 'N/ui/dialog', 'N/search', 'N/runtime'], fun
         return null;
     }
 
-    function getActiveLinkedTOLinesClient(rec) {
+    function getActiveLinkedTOLinesClient(rec, options) {
+        options = options || {};
         var lineCount;
         var toIds = [];
         var lineLabelsByTo = {};
@@ -1075,6 +1087,10 @@ define(['N/url', 'N/currentRecord', 'N/ui/dialog', 'N/search', 'N/runtime'], fun
         for (var i = 0; i < lineCount; i++) {
             var linkedTo = rec.getSublistValue({ sublistId: SUBLIST, fieldId: FIELD.LINKED_TO, line: i });
             if (!linkedTo) continue;
+            if (options.headerLocationOnly) {
+                var lineLocation = rec.getSublistValue({ sublistId: SUBLIST, fieldId: 'location', line: i });
+                if (lineLocation) continue;
+            }
 
             var key = String(linkedTo);
             if (!lineLabelsByTo[key]) {
