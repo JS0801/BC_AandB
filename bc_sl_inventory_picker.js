@@ -2,28 +2,6 @@
  * @NApiVersion 2.1
  * @NScriptType Suitelet
  * @NModuleScope Public
- *
- * BC Inventory Picker Suitelet (v4 - SuiteQL)
- *
- * Uses SuiteQL against aggregateItemLocation for fast, accurate per-location
- * inventory data (on hand / available / committed / on order) instead of an
- * inventorybalance saved search.
- *
- * Features:
- *   - Pre-selects a row if selectedLocId is passed
- *   - Read-only mode (readOnly=T): no radios, no Save, just Close
- *   - Excludes the SO destination location
- *   - Filters to locations in the SO subsidiary, active only
- *
- * URL params:
- *   itemId         (required) item internal ID
- *   qtyRequired    (required) decimal qty needed
- *   destLocationId (required) SO destination location to exclude
- *   subsidiaryId   (required) SO subsidiary
- *   selectedLocId  (optional) current source location to pre-select
- *   readOnly       (optional) "T" for read-only mode
- *   soId           (optional, audit only)
- *   lineId         (optional, round-trip identifier)
  */
 define(['N/query', 'N/search', 'N/log'], function (query, search, log) {
 
@@ -36,6 +14,7 @@ define(['N/query', 'N/search', 'N/log'], function (query, search, log) {
         var destLocationId = req.parameters.destLocationId;
         var subsidiaryId = req.parameters.subsidiaryId;
         var selectedLocId = req.parameters.selectedLocId || '';
+        var otherDemandByLoc = parseDemandByLocation(req.parameters.otherDemandByLoc || '');
         var readOnly = (req.parameters.readOnly === 'T' || req.parameters.readOnly === 'true');
         var soId = req.parameters.soId || '';
         var lineId = req.parameters.lineId || '';
@@ -50,7 +29,7 @@ define(['N/query', 'N/search', 'N/log'], function (query, search, log) {
 
         var rows = [];
         try {
-            rows = getInventoryRows(itemId, subsidiaryId, destLocationId, qtyRequired);
+            rows = getInventoryRows(itemId, subsidiaryId, destLocationId, qtyRequired, otherDemandByLoc);
         } catch (e) {
             log.error({ title: 'Picker SuiteQL failed', details: e });
             res.write({ output: renderError('Could not load inventory: ' + e.message) });
@@ -103,7 +82,8 @@ define(['N/query', 'N/search', 'N/log'], function (query, search, log) {
      * Filters: item, active locations only, subsidiary match
      * (via locationSubsidiaryMap so OneWorld multi-subsidiary locations work).
      */
-    function getInventoryRows(itemId, subsidiaryId, destLocationId, qtyRequired) {
+    function getInventoryRows(itemId, subsidiaryId, destLocationId, qtyRequired, otherDemandByLoc) {
+        otherDemandByLoc = otherDemandByLoc || {};
         var sql =
             'SELECT ' +
             '    ail.location              AS loc_id, ' +
@@ -139,16 +119,20 @@ define(['N/query', 'N/search', 'N/log'], function (query, search, log) {
             var available = parseFloat(r.available || 0);
             var committed = parseFloat(r.committed || 0);
             var onOrder = parseFloat(r.on_order || 0);
+            var alreadySelected = parseFloat(otherDemandByLoc[String(locId)] || 0);
+            var totalRequired = qtyRequired + alreadySelected;
 
             var isDest = (String(locId) === String(destLocationId));
-            var sufficient = (available >= qtyRequired);
+            var sufficient = (available >= totalRequired);
             var status = 'Available';
             var disabled = false;
             if (isDest) {
                 status = 'Destination Location';
                 disabled = true;
             } else if (!sufficient) {
-                status = 'Insufficient Available Qty';
+                status = alreadySelected > 0
+                    ? 'Insufficient Available Qty - already selected on this SO: ' + formatNum(alreadySelected) + ', total needed: ' + formatNum(totalRequired)
+                    : 'Insufficient Available Qty';
                 disabled = true;
             }
 
@@ -159,6 +143,8 @@ define(['N/query', 'N/search', 'N/log'], function (query, search, log) {
                 available: available,
                 committed: committed,
                 onOrder: onOrder,
+                alreadySelected: alreadySelected,
+                totalRequired: totalRequired,
                 status: status,
                 disabled: disabled
             });
@@ -170,6 +156,21 @@ define(['N/query', 'N/search', 'N/log'], function (query, search, log) {
         });
 
         return rows;
+    }
+
+    function parseDemandByLocation(text) {
+        var demand = {};
+        if (!text) return demand;
+
+        String(text).split(',').forEach(function (part) {
+            var bits = part.split(':');
+            if (bits.length !== 2) return;
+            var loc = decodeURIComponent(bits[0] || '');
+            var qty = parseFloat(decodeURIComponent(bits[1] || '0'));
+            if (!loc || !(qty > 0)) return;
+            demand[loc] = (demand[loc] || 0) + qty;
+        });
+        return demand;
     }
 
     function renderPage(ctx) {
@@ -213,7 +214,7 @@ define(['N/query', 'N/search', 'N/log'], function (query, search, log) {
                 ? ''
                 : 'onclick="selectRow(\'' + radioId + '\')"';
 
-            var availClass = r.disabled ? 'num' : (r.available >= qtyRequired ? 'num pos' : 'num');
+            var availClass = r.disabled ? 'num' : (r.available >= r.totalRequired ? 'num pos' : 'num');
 
             return [
                 '<tr class="' + rowClass + '" id="row_' + r.locId + '" ' + clickAttr + '>',
@@ -223,13 +224,14 @@ define(['N/query', 'N/search', 'N/log'], function (query, search, log) {
                 '<td class="' + availClass + '">' + formatNum(r.available) + '</td>',
                 '<td class="num">' + formatNum(r.committed) + '</td>',
                 '<td class="num">' + formatNum(r.onOrder) + '</td>',
+                '<td class="num">' + formatNum(r.alreadySelected) + '</td>',
                 '<td class="status ' + (r.disabled ? 'status-disabled' : 'status-ok') + '">' + escapeHtml(r.status) + '</td>',
                 '</tr>'
             ].join('');
         }).join('');
 
         if (!rowHtml) {
-            rowHtml = '<tr><td colspan="7" class="empty">No locations found for this item in the current subsidiary.</td></tr>';
+            rowHtml = '<tr><td colspan="8" class="empty">No locations found for this item in the current subsidiary.</td></tr>';
         }
 
         var itemLabel = itemInfo.itemid
@@ -318,6 +320,7 @@ define(['N/query', 'N/search', 'N/log'], function (query, search, log) {
             '    <span class="meta-item">Qty Required: <strong>' + formatNum(qtyRequired) + '</strong></span>',
             '    <span class="meta-item">Destination: <strong>' + escapeHtml(destLocName) + '</strong></span>',
             (soId ? '    <span class="meta-item">SO: <strong>#' + escapeHtml(soId) + '</strong></span>' : ''),
+            '    <span class="meta-item">Other selected lines are included in availability.</span>',
             '  </div>',
             '</div>',
             '<div class="container">',
@@ -330,6 +333,7 @@ define(['N/query', 'N/search', 'N/log'], function (query, search, log) {
             '        <th class="num">Qty Available</th>',
             '        <th class="num">Qty Committed</th>',
             '        <th class="num">Qty On Order</th>',
+            '        <th class="num">Selected on SO</th>',
             '        <th>Status</th>',
             '      </tr></thead>',
             '      <tbody>', rowHtml, '</tbody>',
