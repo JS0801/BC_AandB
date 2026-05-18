@@ -86,7 +86,12 @@ define(['N/url', 'N/currentRecord', 'N/ui/dialog', 'N/search', 'N/runtime'], fun
         'H': true,
         'cancelled': true,
         'cancelledOrder': true,
-        'Cancelled': true
+        'Cancelled': true,
+          'TrnfrOrd:G': true,
+    'G': true,
+    'closed': true,
+    'closedOrder': true,
+    'Closed': true
     };
 
     var LOCKED_FIELD_GUARDS = [
