@@ -107,10 +107,6 @@ define([
 
     function beforeLoad(context) {
         try {
-            if (context.type === context.UserEventType.CREATE || context.type === context.UserEventType.COPY) {
-                cleanupCreateModeSourcingFields(context.newRecord);
-            }
-
             if (context.type !== context.UserEventType.VIEW) return;
             injectViewModePickerButtons(context.form, context.newRecord);
         } catch (e) {
@@ -134,7 +130,7 @@ define([
         // ----- COPY (record-level "Make Copy") -----
         if (context.type === T.COPY) {
             log.debug('beforeSubmit:COPY', { soId: rec.id });
-            cleanupAllLines(rec);
+            cleanupCopiedLines(rec, { recordCopy: true });
             validateAllLines(rec);
             return;
         }
@@ -146,7 +142,7 @@ define([
             // Detect line-level copies (Copy Line button) — newly inserted lines
             // that have processed=true or linked_to set from the copy source.
             if (context.type !== T.APPROVE) {
-                cleanupCopiedLines(rec);
+                cleanupCopiedLines(rec, { recordCreate: context.type === T.CREATE });
             }
 
             // Per-line validation
@@ -617,41 +613,6 @@ define([
     // ---------- Copy cleanup ----------
 
     /**
-     * Record-level COPY (Actions -> Make Copy): default every copied line back
-     * to Stock and clear all TO-specific fields.
-     */
-    function cleanupAllLines(rec) {
-        var lineCount = rec.getLineCount({ sublistId: SUBLIST });
-        for (var i = 0; i < lineCount; i++) {
-            rec.setSublistValue({ sublistId: SUBLIST, fieldId: FIELD.METHOD,       line: i, value: SOURCING_METHOD_STOCK });
-            rec.setSublistValue({ sublistId: SUBLIST, fieldId: FIELD.LINKED_TO,    line: i, value: '' });
-            rec.setSublistValue({ sublistId: SUBLIST, fieldId: FIELD.PROCESSED,    line: i, value: false });
-            rec.setSublistValue({ sublistId: SUBLIST, fieldId: FIELD.ERROR,        line: i, value: '' });
-            rec.setSublistValue({ sublistId: SUBLIST, fieldId: FIELD.FROM_LOC,     line: i, value: '' });
-            rec.setSublistValue({ sublistId: SUBLIST, fieldId: FIELD.QTY_TRANSFER, line: i, value: '' });
-        }
-    }
-
-    /**
-     * CREATE mode can inherit line custom fields when users copy or transform
-     * transactions. Clear all sourcing customization fields before the form is
-     * shown so users deliberately choose sourcing on the new SO.
-     */
-    function cleanupCreateModeSourcingFields(rec) {
-        if (!rec) return;
-
-        var lineCount = rec.getLineCount({ sublistId: SUBLIST });
-        for (var i = 0; i < lineCount; i++) {
-            rec.setSublistValue({ sublistId: SUBLIST, fieldId: FIELD.METHOD,       line: i, value: SOURCING_METHOD_STOCK });
-            rec.setSublistValue({ sublistId: SUBLIST, fieldId: FIELD.FROM_LOC,     line: i, value: '' });
-            rec.setSublistValue({ sublistId: SUBLIST, fieldId: FIELD.QTY_TRANSFER, line: i, value: '' });
-            rec.setSublistValue({ sublistId: SUBLIST, fieldId: FIELD.LINKED_TO,    line: i, value: '' });
-            rec.setSublistValue({ sublistId: SUBLIST, fieldId: FIELD.PROCESSED,    line: i, value: false });
-            rec.setSublistValue({ sublistId: SUBLIST, fieldId: FIELD.ERROR,        line: i, value: '' });
-        }
-    }
-
-    /**
      * Line-level Copy: NetSuite gives copied lines no database `line` ID (it's
      * a new insert from the user's perspective). If we see a "new" line carrying
      * processed=true OR a linked_to value, it's a line-copy artifact.
@@ -664,7 +625,10 @@ define([
      * this is the server-side belt-and-suspenders for the case where the user
      * skipped re-picking before saving (or for non-UI contexts).
      */
-    function cleanupCopiedLines(rec) {
+    function cleanupCopiedLines(rec, options) {
+        if (!rec) return;
+
+        options = options || {};
         var lineCount = rec.getLineCount({ sublistId: SUBLIST });
         for (var i = 0; i < lineCount; i++) {
             var dbLineId = null;
@@ -672,20 +636,40 @@ define([
                 dbLineId = rec.getSublistValue({ sublistId: SUBLIST, fieldId: 'line', line: i });
             } catch (e) {}
 
-            if (!dbLineId) {
-                var processed = rec.getSublistValue({ sublistId: SUBLIST, fieldId: FIELD.PROCESSED, line: i });
-                var linkedTo = rec.getSublistValue({ sublistId: SUBLIST, fieldId: FIELD.LINKED_TO, line: i });
-                if (processed || linkedTo) {
-                    log.audit('cleanupCopiedLines:wipeNewLine', { lineIdx: i });
-                    rec.setSublistValue({ sublistId: SUBLIST, fieldId: FIELD.LINKED_TO,    line: i, value: '' });
-                    rec.setSublistValue({ sublistId: SUBLIST, fieldId: FIELD.PROCESSED,    line: i, value: false });
-                    rec.setSublistValue({ sublistId: SUBLIST, fieldId: FIELD.ERROR,        line: i, value: '' });
-                    rec.setSublistValue({ sublistId: SUBLIST, fieldId: FIELD.FROM_LOC,     line: i, value: '' });
-                    rec.setSublistValue({ sublistId: SUBLIST, fieldId: FIELD.QTY_TRANSFER, line: i, value: '' });
-                    // Method left as-is intentionally
-                }
+            /*
+             * Detection must be based on copied result/control fields only.
+             * From Location and Qty can be legitimate new values the user just
+             * selected on a normal create or copied order before first save.
+             */
+            if ((options.recordCopy || options.recordCreate || !dbLineId) && lineHasCopiedResultResidue(rec, i)) {
+                log.audit('cleanupCopiedLines:wipeCopiedLine', {
+                    lineIdx: i,
+                    recordCopy: !!options.recordCopy,
+                    recordCreate: !!options.recordCreate
+                });
+                clearCopiedSourcingLine(rec, i);
             }
         }
+    }
+
+    function lineHasCopiedResultResidue(rec, lineIdx) {
+        return hasCopiedResultValue(rec.getSublistValue({ sublistId: SUBLIST, fieldId: FIELD.LINKED_TO, line: lineIdx })) ||
+            hasCopiedResultValue(rec.getSublistValue({ sublistId: SUBLIST, fieldId: FIELD.PROCESSED, line: lineIdx })) ||
+            hasCopiedResultValue(rec.getSublistValue({ sublistId: SUBLIST, fieldId: FIELD.ERROR, line: lineIdx }));
+    }
+
+    function hasCopiedResultValue(value) {
+        return !(value === null || value === undefined || value === '' ||
+            value === false || value === 'F' || value === 'false');
+    }
+
+    function clearCopiedSourcingLine(rec, lineIdx) {
+        rec.setSublistValue({ sublistId: SUBLIST, fieldId: FIELD.LINKED_TO,    line: lineIdx, value: '' });
+        rec.setSublistValue({ sublistId: SUBLIST, fieldId: FIELD.PROCESSED,    line: lineIdx, value: false });
+        rec.setSublistValue({ sublistId: SUBLIST, fieldId: FIELD.ERROR,        line: lineIdx, value: '' });
+        rec.setSublistValue({ sublistId: SUBLIST, fieldId: FIELD.FROM_LOC,     line: lineIdx, value: '' });
+        rec.setSublistValue({ sublistId: SUBLIST, fieldId: FIELD.QTY_TRANSFER, line: lineIdx, value: '' });
+        // Sourcing Method is intentionally left as-is so the user deliberately re-picks when the line remains TO-sourced.
     }
 
     // ---------- Sourcing engine ----------
