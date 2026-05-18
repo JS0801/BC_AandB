@@ -79,7 +79,9 @@ define([
         'H': true,
         'cancelled': true,
         'cancelledOrder': true,
-        'Cancelled': true
+        'Cancelled': true,
+        'Closed': true,
+        'closed': true
     };
 
     // SO "closed-ish" statuses — blocks transition into these when active TOs exist
