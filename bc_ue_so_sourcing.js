@@ -824,6 +824,7 @@ define([
         if (subsidiary) to.setValue({ fieldId: 'subsidiary', value: subsidiary });
         to.setValue({ fieldId: 'location', value: fromLocId });
         to.setValue({ fieldId: 'transferlocation', value: toLocId });
+        to.setValue({ fieldId: 'incoterm', value: 1 });
         to.setValue({ fieldId: 'memo', value: 'Auto-created from SO #' + (soTranId || soId) });
         var orderStatus = getScriptParam(PARAM_TO_ORDER_STATUS, DEFAULT_TO_ORDER_STATUS);
         if (orderStatus) {
