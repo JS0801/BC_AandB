@@ -35,6 +35,14 @@ define(['N/url', 'N/currentRecord', 'N/ui/dialog', 'N/search'], function (url, c
     var PICKER_SCRIPT_ID = 'customscript_bc_sl_inventory_picker';
     var PICKER_DEPLOY_ID = 'customdeploy_bc_sl_inventory_picker';
 
+    var LINE_FIELD = {
+        ITEM: 'item',
+        QUANTITY: 'quantity',
+        LOCATION: 'location',
+        QTY_BACKORDERED: 'quantitybackordered',
+        QTY_AVAILABLE: 'quantityavailable'
+    };
+
     var BTN_CLASS = 'bc-pick-loc-btn';
     var BTN_CELL_CLASS = 'bc-pick-loc-cell';
 
@@ -210,6 +218,10 @@ define(['N/url', 'N/currentRecord', 'N/ui/dialog', 'N/search'], function (url, c
             if (context.fieldId === FIELD.METHOD) {
                 handleMethodChange(rec);
                 injectButtonsWithRetry();
+            } else if (context.fieldId === LINE_FIELD.QUANTITY ||
+                context.fieldId === LINE_FIELD.ITEM ||
+                context.fieldId === LINE_FIELD.LOCATION) {
+                syncQtyToTransferFromLineAvailability(rec);
             }
         } catch (e) {
             logErr('fieldChanged failed', e, { field: context.fieldId });
@@ -217,7 +229,14 @@ define(['N/url', 'N/currentRecord', 'N/ui/dialog', 'N/search'], function (url, c
     }
 
     function postSourcing(context) {
-        if (context.sublistId === SUBLIST) scheduleInject(INJECT_DEBOUNCE_MS);
+        if (context.sublistId === SUBLIST) {
+            if (context.fieldId === LINE_FIELD.QUANTITY ||
+                context.fieldId === LINE_FIELD.ITEM ||
+                context.fieldId === LINE_FIELD.LOCATION) {
+                try { syncQtyToTransferFromLineAvailability(context.currentRecord); } catch (e) { logErr('postSourcing qty sync failed', e); }
+            }
+            scheduleInject(INJECT_DEBOUNCE_MS);
+        }
     }
 
     function sublistChanged(context) {
@@ -446,17 +465,34 @@ define(['N/url', 'N/currentRecord', 'N/ui/dialog', 'N/search'], function (url, c
     function handleMethodChange(rec) {
         var method = String(rec.getCurrentSublistValue({ sublistId: SUBLIST, fieldId: FIELD.METHOD }) || '');
         if (method === SOURCING_METHOD_TO) {
-            var qtyTransfer = rec.getCurrentSublistValue({ sublistId: SUBLIST, fieldId: FIELD.QTY_TRANSFER });
-            if (!qtyTransfer) {
-                var lineQty = rec.getCurrentSublistValue({ sublistId: SUBLIST, fieldId: 'quantity' });
-                if (lineQty) {
-                    rec.setCurrentSublistValue({ sublistId: SUBLIST, fieldId: FIELD.QTY_TRANSFER, value: lineQty, ignoreFieldChange: true });
-                }
-            }
+            syncQtyToTransferFromLineAvailability(rec);
         } else {
             rec.setCurrentSublistValue({ sublistId: SUBLIST, fieldId: FIELD.FROM_LOC, value: '', ignoreFieldChange: true });
             rec.setCurrentSublistValue({ sublistId: SUBLIST, fieldId: FIELD.QTY_TRANSFER, value: '', ignoreFieldChange: true });
         }
+    }
+
+    function syncQtyToTransferFromLineAvailability(rec) {
+        if (!rec || isLineLocked(rec)) return;
+
+        var method = String(rec.getCurrentSublistValue({ sublistId: SUBLIST, fieldId: FIELD.METHOD }) || '');
+        if (method !== SOURCING_METHOD_TO) return;
+
+        var qtyRequired = calculateCurrentQtyToTransfer(rec);
+        var value = qtyRequired > 0 ? qtyRequired : '';
+        var currentValue = rec.getCurrentSublistValue({ sublistId: SUBLIST, fieldId: FIELD.QTY_TRANSFER });
+
+        if (String(currentValue == null ? '' : currentValue) === String(value == null ? '' : value)) return;
+
+        rec.setCurrentSublistValue({
+            sublistId: SUBLIST,
+            fieldId: FIELD.QTY_TRANSFER,
+            value: value,
+            ignoreFieldChange: true
+        });
+        try {
+            rec.setCurrentSublistValue({ sublistId: SUBLIST, fieldId: FIELD.ERROR, value: '', ignoreFieldChange: true });
+        } catch (e) {}
     }
 
     function handleBodyFieldChange(context) {
@@ -566,10 +602,50 @@ define(['N/url', 'N/currentRecord', 'N/ui/dialog', 'N/search'], function (url, c
         var qtyToTransfer = parseFloat(rec.getCurrentSublistValue({ sublistId: SUBLIST, fieldId: FIELD.QTY_TRANSFER }) || '0');
         if (qtyToTransfer > 0) return qtyToTransfer;
 
-        var bo = parseFloat(rec.getCurrentSublistValue({ sublistId: SUBLIST, fieldId: 'quantitybackordered' }) || '0');
-        if (bo > 0) return bo;
+        return calculateCurrentQtyToTransfer(rec);
+    }
 
-        return parseFloat(rec.getCurrentSublistValue({ sublistId: SUBLIST, fieldId: 'quantity' }) || '0');
+    function calculateCurrentQtyToTransfer(rec) {
+        var backordered = getCurrentNumericValue(rec, LINE_FIELD.QTY_BACKORDERED);
+        if (backordered !== null && backordered > 0) return backordered;
+
+        var ordered = getCurrentNumericValue(rec, LINE_FIELD.QUANTITY);
+        if (ordered === null || ordered <= 0) return 0;
+
+        var available = getCurrentAvailableQty(rec);
+        if (available !== null) {
+            var shortage = ordered - available;
+            return shortage > 0 ? shortage : 0;
+        }
+
+        return ordered;
+    }
+
+    function getCurrentAvailableQty(rec) {
+        var fieldIds = [
+            LINE_FIELD.QTY_AVAILABLE,
+            'quantityavailablebaseunit',
+            'quantityavailablebase'
+        ];
+
+        for (var i = 0; i < fieldIds.length; i++) {
+            var value = getCurrentNumericValue(rec, fieldIds[i]);
+            if (value !== null) return value;
+        }
+        return null;
+    }
+
+    function getCurrentNumericValue(rec, fieldId) {
+        var value;
+        try {
+            value = rec.getCurrentSublistValue({ sublistId: SUBLIST, fieldId: fieldId });
+        } catch (e) {
+            return null;
+        }
+        if (value === null || value === undefined || value === '') return null;
+
+        var parsed = parseFloat(value);
+        return isNaN(parsed) ? null : parsed;
     }
 
     // ---------------- DOM injection ----------------
