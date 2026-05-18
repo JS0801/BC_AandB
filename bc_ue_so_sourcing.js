@@ -528,9 +528,9 @@ define([
     function isCurrentUserAdministrator() {
         try {
             var user = runtime.getCurrentUser();
-            if (String(user.role) === '3' || String(user.roleId || '').toLowerCase() === 'administrator') {
-                return false;
-            }
+            // if (String(user.role) === '3' || String(user.roleId || '').toLowerCase() === 'administrator') {
+            //     return true;
+            // }
 
             return roleHasSourcingAdminFlag(user.role);
         } catch (e) {
