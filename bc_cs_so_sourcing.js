@@ -15,7 +15,7 @@
  *   - Block close/cancel attempts client-side too
  *   - Clear copied sourcing/linkage fields on full SO Copy and Copy Line
  */
-define(['N/url', 'N/currentRecord', 'N/ui/dialog', 'N/search'], function (url, currentRecord, dialog, search) {
+define(['N/url', 'N/currentRecord', 'N/ui/dialog', 'N/search', 'N/runtime'], function (url, currentRecord, dialog, search, runtime) {
 
     var DEBUG = true;
 
@@ -37,6 +37,7 @@ define(['N/url', 'N/currentRecord', 'N/ui/dialog', 'N/search'], function (url, c
 
     var PICKER_SCRIPT_ID = 'customscript_bc_sl_inventory_picker';
     var PICKER_DEPLOY_ID = 'customdeploy_bc_sl_inventory_picker';
+    var ROLE_SOURCING_ADMIN_FIELD = 'custrecord_bc_sourcing_admin_role';
 
     var LINE_FIELD = {
         ITEM: 'item',
@@ -80,10 +81,19 @@ define(['N/url', 'N/currentRecord', 'N/ui/dialog', 'N/search'], function (url, c
         'Received': true
     };
 
+    var CANCELLED_TO_STATUSES = {
+        'TrnfrOrd:H': true,
+        'H': true,
+        'cancelled': true,
+        'cancelledOrder': true,
+        'Cancelled': true
+    };
+
     var LOCKED_FIELD_GUARDS = [
         { field: 'item',             label: 'Item' },
         { field: 'quantity',         label: 'Quantity' },
         { field: 'location',         label: 'Line Location' },
+        { field: 'isclosed',         label: 'Line Closed' },
         { field: FIELD.METHOD,       label: 'Sourcing Method' },
         { field: FIELD.FROM_LOC,     label: 'Source From Location' },
         { field: FIELD.QTY_TRANSFER, label: 'Qty to Transfer' }
@@ -339,7 +349,10 @@ define(['N/url', 'N/currentRecord', 'N/ui/dialog', 'N/search'], function (url, c
                     var newLinkedTo = rec.getSublistValue({ sublistId: SUBLIST, fieldId: FIELD.LINKED_TO, line: newIdx });
                     var stillLocked = isPopulated(newProc) || isPopulated(newLinkedTo);
 
-                    if (!stillLocked) continue; // Admin unlocked, allow changes
+                    if (!stillLocked) {
+                        if (!validateClientAdminUnlockAllowed(oldLine)) return false;
+                        continue;
+                    }
 
                     // Partial unlock?
                     var oldProc = oldLine.values[FIELD.PROCESSED];
@@ -1083,12 +1096,90 @@ define(['N/url', 'N/currentRecord', 'N/ui/dialog', 'N/search'], function (url, c
         return blocking;
     }
 
+    function validateClientAdminUnlockAllowed(oldLine) {
+        if (!isCurrentUserSourcingAdminClient()) {
+            dialog.alert({
+                title: 'Administrator Required',
+                message: 'Line ' + oldLine.lineNum + ': only an Administrator or Sourcing Admin role can clear Linked Transfer Order and Sourcing Processed.'
+            });
+            return false;
+        }
+
+        var linkedTo = oldLine.values[FIELD.LINKED_TO];
+        if (!linkedTo) return true;
+
+        var statusVal = getTransferOrderStatusValueClient(linkedTo);
+        if (!statusVal) {
+            dialog.alert({
+                title: 'Cannot Verify Transfer Order',
+                message: 'Line ' + oldLine.lineNum + ': linked Transfer Order status could not be verified.'
+            });
+            return false;
+        }
+        if (!CANCELLED_TO_STATUSES[statusVal]) {
+            dialog.alert({
+                title: 'Cannot Unlock Line',
+                message: 'Line ' + oldLine.lineNum + ': linked Transfer Order must be Cancelled before clearing Linked Transfer Order and Sourcing Processed. Current status: ' + statusVal + '.'
+            });
+            return false;
+        }
+
+        return true;
+    }
+
+    function isCurrentUserSourcingAdminClient() {
+        try {
+            var user = runtime.getCurrentUser();
+            if (String(user.role) === '3' || String(user.roleId || '').toLowerCase() === 'administrator') return true;
+            return roleHasSourcingAdminFlagClient(user.role);
+        } catch (e) {
+            logErr('isCurrentUserSourcingAdminClient failed', e);
+            return false;
+        }
+    }
+
+    function roleHasSourcingAdminFlagClient(roleId) {
+        if (!roleId) return false;
+
+        try {
+            var look = search.lookupFields({
+                type: 'role',
+                id: roleId,
+                columns: [ROLE_SOURCING_ADMIN_FIELD]
+            });
+            return isTrueValue(look[ROLE_SOURCING_ADMIN_FIELD]);
+        } catch (e) {
+            logErr('roleHasSourcingAdminFlagClient failed', e, { roleId: roleId, fieldId: ROLE_SOURCING_ADMIN_FIELD });
+            return false;
+        }
+    }
+
+    function getTransferOrderStatusValueClient(toId) {
+        try {
+            var look = search.lookupFields({
+                type: search.Type && search.Type.TRANSFER_ORDER ? search.Type.TRANSFER_ORDER : 'transferorder',
+                id: toId,
+                columns: ['status']
+            });
+            return look.status && look.status[0] ? (look.status[0].value || look.status[0].text || '') : '';
+        } catch (e) {
+            logErr('getTransferOrderStatusValueClient failed', e, { toId: toId });
+            return '';
+        }
+    }
+
     function isLineLocked(rec) {
         try {
             var processed = rec.getCurrentSublistValue({ sublistId: SUBLIST, fieldId: FIELD.PROCESSED });
             var linkedTo = rec.getCurrentSublistValue({ sublistId: SUBLIST, fieldId: FIELD.LINKED_TO });
             return isPopulated(processed) || isPopulated(linkedTo);
         } catch (e) { return false; }
+    }
+
+    function isTrueValue(value) {
+        if (value === true) return true;
+        var text = String(value == null ? '' : value).toLowerCase();
+        return text === 't' || text === 'true' || text === 'yes' || text === '1';
     }
 
     function hasAny(obj) { for (var k in obj) if (obj.hasOwnProperty(k)) return true; return false; }
