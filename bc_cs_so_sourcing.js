@@ -87,11 +87,11 @@ define(['N/url', 'N/currentRecord', 'N/ui/dialog', 'N/search', 'N/runtime'], fun
         'cancelled': true,
         'cancelledOrder': true,
         'Cancelled': true,
-          'TrnfrOrd:G': true,
-    'G': true,
-    'closed': true,
-    'closedOrder': true,
-    'Closed': true
+        'TrnfrOrd:G': true,
+        'G': true,
+        'closed': true,
+        'closedOrder': true,
+        'Closed': true
     };
 
     var LOCKED_FIELD_GUARDS = [
@@ -356,6 +356,7 @@ define(['N/url', 'N/currentRecord', 'N/ui/dialog', 'N/search', 'N/runtime'], fun
 
                     if (!stillLocked) {
                         if (!validateClientAdminUnlockAllowed(oldLine)) return false;
+                        clearUnlockedSourcingInputsClient(rec, newIdx);
                         continue;
                     }
 
@@ -1130,6 +1131,18 @@ define(['N/url', 'N/currentRecord', 'N/ui/dialog', 'N/search', 'N/runtime'], fun
         }
 
         return true;
+    }
+
+    function clearUnlockedSourcingInputsClient(rec, lineIdx) {
+        try {
+            rec.selectLine({ sublistId: SUBLIST, line: lineIdx });
+            setCurrentLineValueQuiet(rec, FIELD.FROM_LOC, '');
+            setCurrentLineValueQuiet(rec, FIELD.QTY_TRANSFER, '');
+            setCurrentLineValueQuiet(rec, FIELD.ERROR, '');
+            rec.commitLine({ sublistId: SUBLIST, ignoreRecalc: true });
+        } catch (e) {
+            logErr('clearUnlockedSourcingInputsClient failed', e, { line: lineIdx + 1 });
+        }
     }
 
     function isCurrentUserSourcingAdminClient() {
