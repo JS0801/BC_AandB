@@ -450,19 +450,20 @@ define(['N/url', 'N/currentRecord', 'N/ui/dialog', 'N/search'], function (url, c
     }
 
     function lineHasCopiedSourcingResidue(rec, lineIdx) {
+        /*
+         * Do not use Source From Location or Qty to Transfer as the detector.
+         * Those can be legitimate values on a brand-new SO line. Copied residue
+         * means result/control fields from an existing sourcing run came across.
+         */
         return isPopulated(safeLineValue(rec, FIELD.LINKED_TO, lineIdx)) ||
             isPopulated(safeLineValue(rec, FIELD.PROCESSED, lineIdx)) ||
-            isPopulated(safeLineValue(rec, FIELD.ERROR, lineIdx)) ||
-            isPopulated(safeLineValue(rec, FIELD.FROM_LOC, lineIdx)) ||
-            isPopulated(safeLineValue(rec, FIELD.QTY_TRANSFER, lineIdx));
+            isPopulated(safeLineValue(rec, FIELD.ERROR, lineIdx));
     }
 
     function currentLineHasCopiedSourcingResidue(rec) {
         return isPopulated(safeCurrentLineValue(rec, FIELD.LINKED_TO)) ||
             isPopulated(safeCurrentLineValue(rec, FIELD.PROCESSED)) ||
-            isPopulated(safeCurrentLineValue(rec, FIELD.ERROR)) ||
-            isPopulated(safeCurrentLineValue(rec, FIELD.FROM_LOC)) ||
-            isPopulated(safeCurrentLineValue(rec, FIELD.QTY_TRANSFER));
+            isPopulated(safeCurrentLineValue(rec, FIELD.ERROR));
     }
 
     function clearCurrentLineSourcingFields(rec, reason) {
