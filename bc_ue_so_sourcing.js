@@ -26,6 +26,7 @@ define([
     // ---------- Constants ----------
 
     var SOURCING_METHOD_STOCK = '1';
+    var SOURCING_METHOD_PO = '2';
     var SOURCING_METHOD_TO = '3';
     var SUBLIST = 'item';
 
@@ -131,6 +132,7 @@ define([
         if (context.type === T.COPY) {
             log.debug('beforeSubmit:COPY', { soId: rec.id });
             cleanupCopiedLines(rec, { recordCopy: true });
+            defaultCreateModeSourcingMethods(rec);
             validateAllLines(rec);
             return;
         }
@@ -143,6 +145,9 @@ define([
             // that have processed=true or linked_to set from the copy source.
             if (context.type !== T.APPROVE) {
                 cleanupCopiedLines(rec, { recordCreate: context.type === T.CREATE });
+            }
+            if (context.type === T.CREATE) {
+                defaultCreateModeSourcingMethods(rec);
             }
 
             // Per-line validation
@@ -664,12 +669,43 @@ define([
     }
 
     function clearCopiedSourcingLine(rec, lineIdx) {
+        rec.setSublistValue({ sublistId: SUBLIST, fieldId: FIELD.METHOD,       line: lineIdx, value: getDefaultSourcingMethodForLine(rec, lineIdx) });
         rec.setSublistValue({ sublistId: SUBLIST, fieldId: FIELD.LINKED_TO,    line: lineIdx, value: '' });
         rec.setSublistValue({ sublistId: SUBLIST, fieldId: FIELD.PROCESSED,    line: lineIdx, value: false });
         rec.setSublistValue({ sublistId: SUBLIST, fieldId: FIELD.ERROR,        line: lineIdx, value: '' });
         rec.setSublistValue({ sublistId: SUBLIST, fieldId: FIELD.FROM_LOC,     line: lineIdx, value: '' });
         rec.setSublistValue({ sublistId: SUBLIST, fieldId: FIELD.QTY_TRANSFER, line: lineIdx, value: '' });
-        // Sourcing Method is intentionally left as-is so the user deliberately re-picks when the line remains TO-sourced.
+    }
+
+    function defaultCreateModeSourcingMethods(rec) {
+        if (!rec) return;
+
+        var lineCount = rec.getLineCount({ sublistId: SUBLIST });
+        for (var i = 0; i < lineCount; i++) {
+            var method = String(rec.getSublistValue({ sublistId: SUBLIST, fieldId: FIELD.METHOD, line: i }) || '');
+            if (method === SOURCING_METHOD_TO) continue;
+            if (method && method !== SOURCING_METHOD_STOCK && method !== SOURCING_METHOD_PO) continue;
+
+            var defaultMethod = getDefaultSourcingMethodForLine(rec, i);
+            if (method === defaultMethod) continue;
+
+            rec.setSublistValue({ sublistId: SUBLIST, fieldId: FIELD.METHOD, line: i, value: defaultMethod });
+        }
+    }
+
+    function getDefaultSourcingMethodForLine(rec, lineIdx) {
+        return lineHasNativePO(rec, lineIdx) ? SOURCING_METHOD_PO : SOURCING_METHOD_STOCK;
+    }
+
+    function lineHasNativePO(rec, lineIdx) {
+        return hasNativePOValue(rec.getSublistValue({ sublistId: SUBLIST, fieldId: 'createpo', line: lineIdx })) ||
+            hasNativePOValue(rec.getSublistValue({ sublistId: SUBLIST, fieldId: 'createdropship', line: lineIdx })) ||
+            hasNativePOValue(rec.getSublistValue({ sublistId: SUBLIST, fieldId: 'povendor', line: lineIdx }));
+    }
+
+    function hasNativePOValue(value) {
+        return !(value === null || value === undefined || value === '' ||
+            value === false || value === 'F' || value === 'false');
     }
 
     // ---------- Sourcing engine ----------
