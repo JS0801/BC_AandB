@@ -47,7 +47,7 @@ define(['N/url', 'N/currentRecord', 'N/ui/dialog', 'N/search'], function (url, c
 
     var INJECT_DEBOUNCE_MS = 30;
     var INITIAL_RETRY_DELAYS = [50, 150, 400, 1000];
-    var COPY_CLEANUP_RETRY_DELAYS = [100, 400, 1000];
+    var COPY_CLEANUP_RETRY_DELAYS = [100, 400, 1000, 2000, 4000];
 
     /*
      * Keep the sourcing method on copied lines so the Pick Location button remains visible.
@@ -116,16 +116,17 @@ define(['N/url', 'N/currentRecord', 'N/ui/dialog', 'N/search'], function (url, c
         dbg('pageInit', { mode: pageMode });
 
         var rec = currentRecord.get();
-        var copyMode = isCopyMode();
+        var copyCleanupMode = isCopyCleanupMode(rec);
 
         /*
          * Full SO Copy:
-         * NetSuite loads copied item lines before lineInit runs, so Copy Line
-         * detection alone never sees those rows. Clear copied sourcing/linkage
-         * fields here before building any locked-line snapshot.
+         * In some accounts NetSuite opens a copied SO as context.mode=create,
+         * then loads copied line values asynchronously. Treat any unsaved SO as
+         * copy-cleanup eligible; normal new SOs have no copied residue, so this
+         * is a no-op there.
          */
-        if (copyMode) {
-            clearCopiedOrderSourcing(rec, 'pageInit-copy');
+        if (copyCleanupMode) {
+            clearCopiedOrderSourcing(rec, 'pageInit-new-or-copy');
             scheduleCopyOrderCleanupRetries();
             lockedSnapshot = {};
             initialLineIds = {};
@@ -278,17 +279,17 @@ define(['N/url', 'N/currentRecord', 'N/ui/dialog', 'N/search'], function (url, c
     function saveRecord(context) {
         try {
             var rec = context.currentRecord;
-            var copyMode = isCopyMode();
+            var copyCleanupMode = isCopyCleanupMode(rec);
 
             // Full SO Copy safety net. If NetSuite sourced copied values after pageInit, clear them now.
-            if (copyMode) {
-                clearCopiedOrderSourcing(rec, 'saveRecord-copy');
+            if (copyCleanupMode) {
+                clearCopiedOrderSourcing(rec, 'saveRecord-new-or-copy');
             }
 
             if (!validateCommittedLineSourcingRules(rec)) return false;
 
             // 1. Header subsidiary / location change and close/cancel checks
-            if (!copyMode && originalHeader) {
+            if (!copyCleanupMode && originalHeader) {
                 var newSub = rec.getValue({ fieldId: 'subsidiary' });
                 var newLoc = rec.getValue({ fieldId: 'location' });
                 var newStatus = rec.getValue({ fieldId: 'orderstatus' }) || rec.getValue({ fieldId: 'status' });
@@ -314,7 +315,7 @@ define(['N/url', 'N/currentRecord', 'N/ui/dialog', 'N/search'], function (url, c
             }
 
             // 2. Locked-line restrictions
-            if (!copyMode && lockedSnapshot && hasAny(lockedSnapshot)) {
+            if (!copyCleanupMode && lockedSnapshot && hasAny(lockedSnapshot)) {
                 var newLineMap = buildLineIdMapClient(rec);
 
                 for (var lineId in lockedSnapshot) {
@@ -376,6 +377,20 @@ define(['N/url', 'N/currentRecord', 'N/ui/dialog', 'N/search'], function (url, c
         return String(pageMode || '').toLowerCase() === 'copy';
     }
 
+    function isCopyCleanupMode(rec) {
+        if (isCopyMode()) return true;
+        if (!rec) return false;
+
+        /*
+         * NetSuite can open Copy Sales Order as create mode. A copied SO has no
+         * new internal id yet, so treat unsaved create as cleanup-eligible and
+         * let the residue checks decide whether anything actually clears.
+         */
+        var mode = String(pageMode || '').toLowerCase();
+        var id = rec.id || '';
+        return !id && (mode === 'create' || mode === 'copy' || mode === '');
+    }
+
     function scheduleCopyOrderCleanupRetries() {
         for (var i = 0; i < COPY_CLEANUP_RETRY_DELAYS.length; i++) {
             setTimeout(function () {
@@ -420,12 +435,12 @@ define(['N/url', 'N/currentRecord', 'N/ui/dialog', 'N/search'], function (url, c
 
     function clearCopiedCurrentLineIfNeeded(rec, reason, allowCopyMode) {
         if (!rec || copyCleanupInProgress) return false;
-        if (isCopyMode() && !allowCopyMode) return false;
+        if (isCopyCleanupMode(rec) && !allowCopyMode) return false;
 
         if (!currentLineHasCopiedSourcingResidue(rec)) return false;
 
         var lineId = getCurrentLineIdClient(rec);
-        if (!isCopyMode() && lineId && initialLineIds && initialLineIds[lineId]) {
+        if (!isCopyCleanupMode(rec) && lineId && initialLineIds && initialLineIds[lineId]) {
             return false;
         }
 
