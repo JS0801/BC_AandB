@@ -80,8 +80,11 @@ define([
         'cancelled': true,
         'cancelledOrder': true,
         'Cancelled': true,
-        'Closed': true,
-        'closed': true
+        'TrnfrOrd:G': true,
+        'G': true,
+        'closed': true,
+        'closedOrder': true,
+        'Closed': true
     };
 
     // SO "closed-ish" statuses — blocks transition into these when active TOs exist
