@@ -471,6 +471,7 @@ define([
             // the audit trail and require operational correction first.
             if (!stillLocked) {
                 validateAdminUnlockAllowed(oldLine);
+                clearUnlockedSourcingInputs(newRec, newIdx);
                 return;
             }
 
@@ -523,6 +524,12 @@ define([
         if (!CANCELLED_TO_STATUSES[statusVal]) {
             throw new Error('Line ' + oldLine.lineNum + ': linked Transfer Order must be Cancelled before clearing Linked Transfer Order and Sourcing Processed. Current status: ' + statusVal + '.');
         }
+    }
+
+    function clearUnlockedSourcingInputs(rec, lineIdx) {
+        rec.setSublistValue({ sublistId: SUBLIST, fieldId: FIELD.FROM_LOC,     line: lineIdx, value: '' });
+        rec.setSublistValue({ sublistId: SUBLIST, fieldId: FIELD.QTY_TRANSFER, line: lineIdx, value: '' });
+        rec.setSublistValue({ sublistId: SUBLIST, fieldId: FIELD.ERROR,        line: lineIdx, value: '' });
     }
 
     function isCurrentUserAdministrator() {
