@@ -108,21 +108,21 @@ define(['N/search', 'N/log'], function (search, log) {
 
     function runInventoryRows(filters, destLocationId, qtyRequired) {
         var columns = [
-            search.createColumn({ name: 'location' }),
-            search.createColumn({ name: INVBAL_FIELD.AVAILABLE }),
-            search.createColumn({ name: INVBAL_FIELD.ON_HAND }),
-            search.createColumn({ name: INVBAL_FIELD.COMMITTED })
+            search.createColumn({ name: 'location', summary: "GROUP" }),
+            search.createColumn({ name: INVBAL_FIELD.AVAILABLE, summary: "SUM" }),
+            search.createColumn({ name: INVBAL_FIELD.ON_HAND, summary: "SUM" }),
+            search.createColumn({ name: INVBAL_FIELD.COMMITTED, summary: "SUM" })
         ];
 
         var rows = [];
         var s = search.create({ type: 'inventorybalance', filters: filters, columns: columns });
 
         s.run().each(function (r) {
-            var locId = r.getValue({ name: 'location' });
-            var locName = r.getText({ name: 'location' });
-            var onHand = parseFloat(r.getValue({ name: INVBAL_FIELD.ON_HAND }) || '0');
-            var available = parseFloat(r.getValue({ name: INVBAL_FIELD.AVAILABLE }) || '0');
-            var committed = parseFloat(r.getValue({ name: INVBAL_FIELD.COMMITTED }) || '0');
+            var locId = r.getValue({ name: 'location', summary: "GROUP" });
+            var locName = r.getText({ name: 'location', summary: "GROUP" });
+            var onHand = parseFloat(r.getValue({ name: INVBAL_FIELD.ON_HAND, summary: "SUM" }) || '0');
+            var available = parseFloat(r.getValue({ name: INVBAL_FIELD.AVAILABLE, summary: "SUM" }) || '0');
+            var committed = parseFloat(r.getValue({ name: INVBAL_FIELD.COMMITTED, summary: "SUM" }) || '0');
 
             var isDest = (String(locId) === String(destLocationId));
             var sufficient = (available >= qtyRequired);
