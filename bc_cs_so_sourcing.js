@@ -13,6 +13,8 @@
  *     compare current values and BLOCK before round-tripping to the server
  *   - Block header subsidiary / location changes when linked TOs exist
  *   - Block close/cancel attempts client-side too
+ *   - On copy/create mode, sweep stale sourcing/linkage fields off every line
+ *     BEFORE snapshotting, so the new record starts clean.
  */
 define(['N/url', 'N/currentRecord', 'N/ui/dialog', 'N/search'], function (url, currentRecord, dialog, search) {
 
@@ -108,6 +110,16 @@ define(['N/url', 'N/currentRecord', 'N/ui/dialog', 'N/search'], function (url, c
 
         var rec = currentRecord.get();
 
+        // In copy/create mode, any FROM_LOC / QTY_TRANSFER / LINKED_TO /
+        // PROCESSED / ERROR values carried over from the source record are
+        // stale and must not survive into the new SO. Clear them across all
+        // lines BEFORE snapshotting, so the snapshot doesn't treat them as
+        // locked and so saveRecord doesn't compare against stale values.
+        if (pageMode === 'copy' || pageMode === 'create') {
+            try { clearSourcingFieldsAllLines(rec); }
+            catch (e) { logErr('pageInit:clearSourcingFieldsAllLines failed', e); }
+        }
+
         // Snapshot original state for diff-based blocks
         try {
             lockedSnapshot = buildLockedSnapshot(rec);
@@ -161,9 +173,11 @@ define(['N/url', 'N/currentRecord', 'N/ui/dialog', 'N/search'], function (url, c
         try {
             var rec = context.currentRecord;
 
-            // Detect line-copy: a current line with no database `line` id but
-            // carrying processed=true or a linked_to value is a fresh copy of
-            // a locked line. Clean it immediately so the user re-picks.
+            // Detect line-copy: a current line with no database `line` id is a
+            // freshly added or copied row. In create/copy mode, scrub sourcing
+            // fields regardless of whether processed/linked_to carried over —
+            // some custom field copy settings may not bring those flags along,
+            // but FROM_LOC still gets copied if its field is set to copy.
             var dbLineId = null;
             try {
                 dbLineId = rec.getCurrentSublistValue({ sublistId: SUBLIST, fieldId: 'line' });
@@ -171,11 +185,17 @@ define(['N/url', 'N/currentRecord', 'N/ui/dialog', 'N/search'], function (url, c
 
             if (!dbLineId) {
                 var processed = rec.getCurrentSublistValue({ sublistId: SUBLIST, fieldId: FIELD.PROCESSED });
-                var linkedTo = rec.getCurrentSublistValue({ sublistId: SUBLIST, fieldId: FIELD.LINKED_TO });
+                var linkedTo  = rec.getCurrentSublistValue({ sublistId: SUBLIST, fieldId: FIELD.LINKED_TO });
+                var fromLoc   = rec.getCurrentSublistValue({ sublistId: SUBLIST, fieldId: FIELD.FROM_LOC });
+                var qtyXfer   = rec.getCurrentSublistValue({ sublistId: SUBLIST, fieldId: FIELD.QTY_TRANSFER });
+                var errVal    = rec.getCurrentSublistValue({ sublistId: SUBLIST, fieldId: FIELD.ERROR });
 
-                if (processed || linkedTo) {
-                    dbg('lineInit:copyDetected:wipe');
-                    // Clear linkage fields
+                if (processed || linkedTo || fromLoc || qtyXfer || errVal) {
+                    dbg('lineInit:newLine:wipeSourcingFields', {
+                        processed: !!processed, linkedTo: !!linkedTo,
+                        fromLoc: !!fromLoc, qtyXfer: !!qtyXfer, errVal: !!errVal
+                    });
+                    // Clear linkage flags
                     rec.setCurrentSublistValue({ sublistId: SUBLIST, fieldId: FIELD.LINKED_TO,    value: '',    ignoreFieldChange: true });
                     rec.setCurrentSublistValue({ sublistId: SUBLIST, fieldId: FIELD.PROCESSED,    value: false, ignoreFieldChange: true });
                     rec.setCurrentSublistValue({ sublistId: SUBLIST, fieldId: FIELD.ERROR,        value: '',    ignoreFieldChange: true });
@@ -345,6 +365,52 @@ define(['N/url', 'N/currentRecord', 'N/ui/dialog', 'N/search'], function (url, c
             logErr('saveRecord check failed', e);
             return true; // Fail open — UE will catch
         }
+    }
+
+    // ---------------- Copy/create cleanup ----------------
+
+    /**
+     * Walk every committed sublist line and clear sourcing/linkage fields
+     * that should not survive a copy or create-from-template. Uses
+     * selectLine/commitLine so values are persisted into the working
+     * record. Skips rows that already have nothing to clear to avoid
+     * needlessly dirtying the form.
+     */
+    function clearSourcingFieldsAllLines(rec) {
+        var lineCount;
+        try { lineCount = rec.getLineCount({ sublistId: SUBLIST }); } catch (e) { return; }
+        if (!lineCount || lineCount <= 0) return;
+
+        var cleared = 0;
+        for (var i = 0; i < lineCount; i++) {
+            var fromLoc, qtyXfer, linkedTo, processed, errVal;
+            try {
+                fromLoc   = rec.getSublistValue({ sublistId: SUBLIST, fieldId: FIELD.FROM_LOC,     line: i });
+                qtyXfer   = rec.getSublistValue({ sublistId: SUBLIST, fieldId: FIELD.QTY_TRANSFER, line: i });
+                linkedTo  = rec.getSublistValue({ sublistId: SUBLIST, fieldId: FIELD.LINKED_TO,    line: i });
+                processed = rec.getSublistValue({ sublistId: SUBLIST, fieldId: FIELD.PROCESSED,    line: i });
+                errVal    = rec.getSublistValue({ sublistId: SUBLIST, fieldId: FIELD.ERROR,        line: i });
+            } catch (eRead) {
+                logErr('clearSourcingFieldsAllLines:read failed', eRead, { line: i });
+                continue;
+            }
+
+            if (!fromLoc && !qtyXfer && !linkedTo && !processed && !errVal) continue;
+
+            try {
+                rec.selectLine({ sublistId: SUBLIST, line: i });
+                rec.setCurrentSublistValue({ sublistId: SUBLIST, fieldId: FIELD.FROM_LOC,     value: '',    ignoreFieldChange: true });
+                rec.setCurrentSublistValue({ sublistId: SUBLIST, fieldId: FIELD.QTY_TRANSFER, value: '',    ignoreFieldChange: true });
+                rec.setCurrentSublistValue({ sublistId: SUBLIST, fieldId: FIELD.LINKED_TO,    value: '',    ignoreFieldChange: true });
+                rec.setCurrentSublistValue({ sublistId: SUBLIST, fieldId: FIELD.PROCESSED,    value: false, ignoreFieldChange: true });
+                rec.setCurrentSublistValue({ sublistId: SUBLIST, fieldId: FIELD.ERROR,        value: '',    ignoreFieldChange: true });
+                rec.commitLine({ sublistId: SUBLIST });
+                cleared++;
+            } catch (eWrite) {
+                logErr('clearSourcingFieldsAllLines:write failed', eWrite, { line: i });
+            }
+        }
+        dbg('clearSourcingFieldsAllLines:done', { totalLines: lineCount, cleared: cleared });
     }
 
     // ---------------- Validation helpers ----------------
