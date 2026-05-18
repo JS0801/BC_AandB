@@ -114,6 +114,7 @@ define(['N/url', 'N/currentRecord', 'N/ui/dialog', 'N/search', 'N/runtime'], fun
     var injectTimer = null;
     var suppressValidation = false;
     var copyCleanupInProgress = false;
+    var adminUnlockCleanedLineIds = {};
 
     // ---------------- Logging ----------------
 
@@ -231,6 +232,9 @@ define(['N/url', 'N/currentRecord', 'N/ui/dialog', 'N/search', 'N/runtime'], fun
             var rec = context.currentRecord;
 
             clearCopiedCurrentLineIfNeeded(rec, 'fieldChanged-copy-line');
+            if (context.fieldId === FIELD.LINKED_TO || context.fieldId === FIELD.PROCESSED) {
+                clearCurrentAdminUnlockedLineIfReady(rec, 'fieldChanged-admin-unlock', true);
+            }
             if (context.fieldId === LINE_FIELD.ITEM && isCopyCleanupMode(rec)) {
                 defaultCurrentLineSourcingMethodForCreate(rec, 'fieldChanged-item-default');
             }
@@ -305,6 +309,10 @@ define(['N/url', 'N/currentRecord', 'N/ui/dialog', 'N/search', 'N/runtime'], fun
                 clearCopiedOrderSourcing(rec, 'saveRecord-new-or-copy');
             }
 
+            if (!copyCleanupMode && clearAdminUnlockedLinesBeforeSave(rec)) {
+                return false;
+            }
+
             if (!validateCommittedLineSourcingRules(rec)) return false;
 
             // 1. Header subsidiary / location change and close/cancel checks
@@ -356,7 +364,15 @@ define(['N/url', 'N/currentRecord', 'N/ui/dialog', 'N/search', 'N/runtime'], fun
 
                     if (!stillLocked) {
                         if (!validateClientAdminUnlockAllowed(oldLine)) return false;
-                        clearUnlockedSourcingInputsClient(rec, newIdx);
+                        if (!adminUnlockCleanedLineIds[lineId]) {
+                            clearUnlockedSourcingInputsClient(rec, newIdx);
+                            adminUnlockCleanedLineIds[lineId] = true;
+                            dialog.alert({
+                                title: 'Source Selection Cleared',
+                                message: 'Line ' + oldLine.lineNum + ': previous Source From Location and Qty to Transfer were cleared. Open the picker again and choose a fresh source before saving.'
+                            });
+                            return false;
+                        }
                         continue;
                     }
 
@@ -1125,7 +1141,7 @@ define(['N/url', 'N/currentRecord', 'N/ui/dialog', 'N/search', 'N/runtime'], fun
         if (!CANCELLED_TO_STATUSES[statusVal]) {
             dialog.alert({
                 title: 'Cannot Unlock Line',
-                message: 'Line ' + oldLine.lineNum + ': linked Transfer Order must be Cancelled before clearing Linked Transfer Order and Sourcing Processed. Current status: ' + statusVal + '.'
+                message: 'Line ' + oldLine.lineNum + ': linked Transfer Order must be Cancelled or Closed before clearing Linked Transfer Order and Sourcing Processed. Current status: ' + statusVal + '.'
             });
             return false;
         }
@@ -1143,6 +1159,67 @@ define(['N/url', 'N/currentRecord', 'N/ui/dialog', 'N/search', 'N/runtime'], fun
         } catch (e) {
             logErr('clearUnlockedSourcingInputsClient failed', e, { line: lineIdx + 1 });
         }
+    }
+
+    function clearCurrentAdminUnlockedLineIfReady(rec, reason, showNotice) {
+        if (!rec || !lockedSnapshot) return false;
+
+        var lineId = getCurrentLineIdClient(rec);
+        if (!lineId || !lockedSnapshot[lineId]) return false;
+
+        if (adminUnlockCleanedLineIds[lineId]) return false;
+
+        var linkedTo = safeCurrentLineValue(rec, FIELD.LINKED_TO);
+        var processed = safeCurrentLineValue(rec, FIELD.PROCESSED);
+        if (isPopulated(linkedTo) || isPopulated(processed)) return false;
+
+        var oldLine = lockedSnapshot[lineId];
+        if (!validateClientAdminUnlockAllowed(oldLine)) return false;
+
+        setCurrentLineValueQuiet(rec, FIELD.FROM_LOC, '');
+        setCurrentLineValueQuiet(rec, FIELD.QTY_TRANSFER, '');
+        setCurrentLineValueQuiet(rec, FIELD.ERROR, '');
+        adminUnlockCleanedLineIds[lineId] = true;
+
+        if (showNotice) {
+            dialog.alert({
+                title: 'Source Selection Cleared',
+                message: 'Line ' + oldLine.lineNum + ': previous Source From Location and Qty to Transfer were cleared. Open the picker again and choose a fresh source before saving.'
+            });
+        }
+
+        dbg('clearCurrentAdminUnlockedLineIfReady', { reason: reason, lineId: lineId });
+        return true;
+    }
+
+    function clearAdminUnlockedLinesBeforeSave(rec) {
+        if (!rec || !lockedSnapshot || !hasAny(lockedSnapshot)) return false;
+
+        var lineMap = buildLineIdMapClient(rec);
+        for (var lineId in lockedSnapshot) {
+            if (!lockedSnapshot.hasOwnProperty(lineId)) continue;
+            if (adminUnlockCleanedLineIds[lineId]) continue;
+
+            var lineIdx = lineMap[lineId];
+            if (lineIdx === undefined || lineIdx === null) continue;
+
+            var linkedTo = safeLineValue(rec, FIELD.LINKED_TO, lineIdx);
+            var processed = safeLineValue(rec, FIELD.PROCESSED, lineIdx);
+            if (isPopulated(linkedTo) || isPopulated(processed)) continue;
+
+            var oldLine = lockedSnapshot[lineId];
+            if (!validateClientAdminUnlockAllowed(oldLine)) return true;
+
+            clearUnlockedSourcingInputsClient(rec, lineIdx);
+            adminUnlockCleanedLineIds[lineId] = true;
+            dialog.alert({
+                title: 'Source Selection Cleared',
+                message: 'Line ' + oldLine.lineNum + ': previous Source From Location and Qty to Transfer were cleared. Open the picker again and choose a fresh source before saving.'
+            });
+            return true;
+        }
+
+        return false;
     }
 
     function isCurrentUserSourcingAdminClient() {
