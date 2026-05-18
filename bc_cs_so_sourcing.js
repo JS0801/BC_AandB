@@ -3,16 +3,17 @@
  * @NScriptType ClientScript
  * @NModuleScope Public
  *
- * BC SO Sourcing Client Script (with saveRecord lock enforcement)
+ * BC SO Sourcing Client Script
  *
  * Capabilities:
  *   - Inject "Pick Location" buttons into the item sublist DOM
- *   - Manage method/qty/from-location field interactions
+ *   - Manage method/from-location interactions and default transfer qty from SO line qty
  *   - Open inventory picker popup, receive selection
- *   - Capture a SNAPSHOT of locked line values on pageInit so saveRecord can
- *     compare current values and BLOCK before round-tripping to the server
+ *   - Capture a snapshot of locked line values on pageInit so saveRecord can
+ *     compare current values and block before round-tripping to the server
  *   - Block header subsidiary / location changes when linked TOs exist
  *   - Block close/cancel attempts client-side too
+ *   - Clear copied sourcing/linkage fields on full SO Copy and Copy Line
  */
 define(['N/url', 'N/currentRecord', 'N/ui/dialog', 'N/search'], function (url, currentRecord, dialog, search) {
 
@@ -35,11 +36,24 @@ define(['N/url', 'N/currentRecord', 'N/ui/dialog', 'N/search'], function (url, c
     var PICKER_SCRIPT_ID = 'customscript_bc_sl_inventory_picker';
     var PICKER_DEPLOY_ID = 'customdeploy_bc_sl_inventory_picker';
 
+    var LINE_FIELD = {
+        ITEM: 'item',
+        QUANTITY: 'quantity',
+        LOCATION: 'location'
+    };
+
     var BTN_CLASS = 'bc-pick-loc-btn';
     var BTN_CELL_CLASS = 'bc-pick-loc-cell';
 
     var INJECT_DEBOUNCE_MS = 30;
     var INITIAL_RETRY_DELAYS = [50, 150, 400, 1000];
+    var COPY_CLEANUP_RETRY_DELAYS = [100, 400, 1000, 2000, 4000];
+
+    /*
+     * Keep the sourcing method on copied lines so the Pick Location button remains visible.
+     * Set this to true only if copied SO / copied lines should fully reset sourcing method too.
+     */
+    var CLEAR_METHOD_ON_COPY = false;
 
     // SO closed-ish statuses (parallel to UE)
     var CLOSED_STATUSES = {
@@ -81,11 +95,14 @@ define(['N/url', 'N/currentRecord', 'N/ui/dialog', 'N/search'], function (url, c
 
     // Snapshot of original values for locked lines, taken at pageInit
     var lockedSnapshot = null; // { lineId -> { lineNum, values } }
+    var initialLineIds = null; // { lineId -> true } for lines loaded at pageInit
     var originalHeader = null; // { subsidiary, location, status }
     var pageMode = null;        // 'create' | 'edit' | 'copy' | 'view'
     var pendingPickerLineIndex = null;
     var observer = null;
     var injectTimer = null;
+    var suppressValidation = false;
+    var copyCleanupInProgress = false;
 
     // ---------------- Logging ----------------
 
@@ -99,18 +116,40 @@ define(['N/url', 'N/currentRecord', 'N/ui/dialog', 'N/search'], function (url, c
         dbg('pageInit', { mode: pageMode });
 
         var rec = currentRecord.get();
+        var copyCleanupMode = isCopyCleanupMode(rec);
 
-        // Snapshot original state for diff-based blocks
-        try {
-            lockedSnapshot = buildLockedSnapshot(rec);
-            originalHeader = {
-                subsidiary: rec.getValue({ fieldId: 'subsidiary' }),
-                location: rec.getValue({ fieldId: 'location' }),
-                status: rec.getValue({ fieldId: 'orderstatus' }) || rec.getValue({ fieldId: 'status' })
-            };
-            dbg('pageInit:snapshot', { lockedLines: Object.keys(lockedSnapshot).length, header: originalHeader });
-        } catch (e) {
-            logErr('pageInit:snapshot failed', e);
+        /*
+         * Full SO Copy:
+         * In some accounts NetSuite opens a copied SO as context.mode=create,
+         * then loads copied line values asynchronously. Treat any unsaved SO as
+         * copy-cleanup eligible; normal new SOs have no copied residue, so this
+         * is a no-op there.
+         */
+        if (copyCleanupMode) {
+            clearCopiedOrderSourcing(rec, 'pageInit-new-or-copy');
+            scheduleCopyOrderCleanupRetries();
+            lockedSnapshot = {};
+            initialLineIds = {};
+            originalHeader = null;
+        } else {
+            try {
+                lockedSnapshot = buildLockedSnapshot(rec);
+                initialLineIds = buildLineIdSetClient(rec);
+                originalHeader = {
+                    subsidiary: rec.getValue({ fieldId: 'subsidiary' }),
+                    location: rec.getValue({ fieldId: 'location' }),
+                    status: rec.getValue({ fieldId: 'orderstatus' }) || rec.getValue({ fieldId: 'status' })
+                };
+                dbg('pageInit:snapshot', {
+                    lockedLines: Object.keys(lockedSnapshot).length,
+                    initialLines: Object.keys(initialLineIds).length,
+                    header: originalHeader
+                });
+            } catch (e) {
+                lockedSnapshot = {};
+                initialLineIds = {};
+                logErr('pageInit:snapshot failed', e);
+            }
         }
 
         // Picker callbacks
@@ -151,39 +190,15 @@ define(['N/url', 'N/currentRecord', 'N/ui/dialog', 'N/search'], function (url, c
         if (!context || context.sublistId !== SUBLIST) return;
 
         try {
-            var rec = context.currentRecord;
-
-            // Detect line-copy: a current line with no database `line` id but
-            // carrying processed=true or a linked_to value is a fresh copy of
-            // a locked line. Clean it immediately so the user re-picks.
-            var dbLineId = null;
-            try {
-                dbLineId = rec.getCurrentSublistValue({ sublistId: SUBLIST, fieldId: 'line' });
-            } catch (e) {}
-
-            if (!dbLineId) {
-                var processed = rec.getCurrentSublistValue({ sublistId: SUBLIST, fieldId: FIELD.PROCESSED });
-                var linkedTo = rec.getCurrentSublistValue({ sublistId: SUBLIST, fieldId: FIELD.LINKED_TO });
-
-                if (processed || linkedTo) {
-                    dbg('lineInit:copyDetected:wipe');
-                    // Clear linkage fields
-                    rec.setCurrentSublistValue({ sublistId: SUBLIST, fieldId: FIELD.LINKED_TO,    value: '',    ignoreFieldChange: true });
-                    rec.setCurrentSublistValue({ sublistId: SUBLIST, fieldId: FIELD.PROCESSED,    value: false, ignoreFieldChange: true });
-                    rec.setCurrentSublistValue({ sublistId: SUBLIST, fieldId: FIELD.ERROR,        value: '',    ignoreFieldChange: true });
-                    // Clear sourcing inputs so user re-picks location + qty
-                    rec.setCurrentSublistValue({ sublistId: SUBLIST, fieldId: FIELD.FROM_LOC,     value: '',    ignoreFieldChange: true });
-                    rec.setCurrentSublistValue({ sublistId: SUBLIST, fieldId: FIELD.QTY_TRANSFER, value: '',    ignoreFieldChange: true });
-                    // Method (custcol_bc_sourcing_method) intentionally left as-is
-                    // so if it was TO, the Pick Location button surfaces immediately
-                    // on the new line.
-
-                    // After Copy Line, NetSuite paints the new row asynchronously.
-                    // Schedule a staircase of re-injects to catch whichever paint cycle wins.
-                    setTimeout(injectButtonsNow, 50);
-                    setTimeout(injectButtonsNow, 200);
-                    setTimeout(injectButtonsNow, 600);
-                }
+            /*
+             * Copy Line:
+             * A freshly copied line may carry processed/linkage values from the
+             * source line. Existing locked lines are protected by initialLineIds.
+             */
+            if (clearCopiedCurrentLineIfNeeded(context.currentRecord, 'lineInit-copy-line')) {
+                setTimeout(injectButtonsNow, 50);
+                setTimeout(injectButtonsNow, 200);
+                setTimeout(injectButtonsNow, 600);
             }
         } catch (e) {
             logErr('lineInit copy-detect failed', e);
@@ -194,22 +209,26 @@ define(['N/url', 'N/currentRecord', 'N/ui/dialog', 'N/search'], function (url, c
 
     function fieldChanged(context) {
         if (context.sublistId !== SUBLIST) {
-            // Body-level field changed — could be subsidiary, location, status
             handleBodyFieldChange(context);
             return;
         }
+        if (suppressValidation) return;
+
         try {
             var rec = context.currentRecord;
+
+            clearCopiedCurrentLineIfNeeded(rec, 'fieldChanged-copy-line');
+
             if (isLineLocked(rec)) {
-                // Lock check happens at saveRecord, but UX nicety: notify if user changes
-                // a locked-field on a locked line
                 if (LOCKED_FIELD_GUARDS.some(function (g) { return g.field === context.fieldId; })) {
-                    // Optionally show toast — for now, silent. saveRecord will block.
+                    // saveRecord blocks the change with a specific message.
                 }
             }
             if (context.fieldId === FIELD.METHOD) {
                 handleMethodChange(rec);
                 injectButtonsWithRetry();
+            } else if (context.fieldId === LINE_FIELD.QUANTITY) {
+                syncQtyToTransferFromLineQuantity(rec);
             }
         } catch (e) {
             logErr('fieldChanged failed', e, { field: context.fieldId });
@@ -217,7 +236,13 @@ define(['N/url', 'N/currentRecord', 'N/ui/dialog', 'N/search'], function (url, c
     }
 
     function postSourcing(context) {
-        if (context.sublistId === SUBLIST) scheduleInject(INJECT_DEBOUNCE_MS);
+        if (context.sublistId === SUBLIST) {
+            if (!suppressValidation &&
+                (context.fieldId === LINE_FIELD.QUANTITY || context.fieldId === LINE_FIELD.ITEM)) {
+                try { syncQtyToTransferFromLineQuantity(context.currentRecord); } catch (e) { logErr('postSourcing qty sync failed', e); }
+            }
+            scheduleInject(INJECT_DEBOUNCE_MS);
+        }
     }
 
     function sublistChanged(context) {
@@ -225,8 +250,19 @@ define(['N/url', 'N/currentRecord', 'N/ui/dialog', 'N/search'], function (url, c
     }
 
     function validateLine(context) {
+        if (suppressValidation) return true;
         if (context.sublistId !== SUBLIST) return true;
         try {
+            /*
+             * This is the most reliable hook in some NetSuite transaction UIs:
+             * copied line-level custom fields may not accept or keep changes made
+             * during pageInit, but they do clear when the copied line is committed.
+             */
+            if (clearCopiedCurrentLineIfNeeded(context.currentRecord, 'validateLine-copy-cleanup', true)) {
+                scheduleInject(INJECT_DEBOUNCE_MS);
+                return true;
+            }
+
             var ok = validateCurrentLineSourcingRules(context.currentRecord);
             if (ok) scheduleInject(INJECT_DEBOUNCE_MS);
             return ok;
@@ -243,11 +279,17 @@ define(['N/url', 'N/currentRecord', 'N/ui/dialog', 'N/search'], function (url, c
     function saveRecord(context) {
         try {
             var rec = context.currentRecord;
+            var copyCleanupMode = isCopyCleanupMode(rec);
+
+            // Full SO Copy safety net. If NetSuite sourced copied values after pageInit, clear them now.
+            if (copyCleanupMode) {
+                clearCopiedOrderSourcing(rec, 'saveRecord-new-or-copy');
+            }
 
             if (!validateCommittedLineSourcingRules(rec)) return false;
 
             // 1. Header subsidiary / location change and close/cancel checks
-            if (originalHeader) {
+            if (!copyCleanupMode && originalHeader) {
                 var newSub = rec.getValue({ fieldId: 'subsidiary' });
                 var newLoc = rec.getValue({ fieldId: 'location' });
                 var newStatus = rec.getValue({ fieldId: 'orderstatus' }) || rec.getValue({ fieldId: 'status' });
@@ -271,9 +313,9 @@ define(['N/url', 'N/currentRecord', 'N/ui/dialog', 'N/search'], function (url, c
                     }
                 }
             }
-	
+
             // 2. Locked-line restrictions
-            if (lockedSnapshot && hasAny(lockedSnapshot)) {
+            if (!copyCleanupMode && lockedSnapshot && hasAny(lockedSnapshot)) {
                 var newLineMap = buildLineIdMapClient(rec);
 
                 for (var lineId in lockedSnapshot) {
@@ -291,14 +333,15 @@ define(['N/url', 'N/currentRecord', 'N/ui/dialog', 'N/search'], function (url, c
 
                     var newProc = rec.getSublistValue({ sublistId: SUBLIST, fieldId: FIELD.PROCESSED, line: newIdx });
                     var newLinkedTo = rec.getSublistValue({ sublistId: SUBLIST, fieldId: FIELD.LINKED_TO, line: newIdx });
-                    var stillLocked = !!newProc || !!newLinkedTo;
+                    var stillLocked = isPopulated(newProc) || isPopulated(newLinkedTo);
 
                     if (!stillLocked) continue; // Admin unlocked, allow changes
 
                     // Partial unlock?
                     var oldProc = oldLine.values[FIELD.PROCESSED];
                     var oldLinked = oldLine.values[FIELD.LINKED_TO];
-                    if ((oldProc && !newProc && newLinkedTo) || (oldLinked && !newLinkedTo && newProc)) {
+                    if ((isPopulated(oldProc) && !isPopulated(newProc) && isPopulated(newLinkedTo)) ||
+                        (isPopulated(oldLinked) && !isPopulated(newLinkedTo) && isPopulated(newProc))) {
                         dialog.alert({
                             title: 'Incomplete Unlock',
                             message: 'Line ' + oldLine.lineNum + ': clear BOTH Linked Transfer Order AND Sourcing Processed to unlock. Partial clearing is not allowed.'
@@ -324,8 +367,138 @@ define(['N/url', 'N/currentRecord', 'N/ui/dialog', 'N/search'], function (url, c
             return true;
         } catch (e) {
             logErr('saveRecord check failed', e);
-            return true; // Fail open — UE will catch
+            return true; // Fail open - UE will catch
         }
+    }
+
+    // ---------------- Copy cleanup helpers ----------------
+
+    function isCopyMode() {
+        return String(pageMode || '').toLowerCase() === 'copy';
+    }
+
+    function isCopyCleanupMode(rec) {
+        if (isCopyMode()) return true;
+        if (!rec) return false;
+
+        /*
+         * NetSuite can open Copy Sales Order as create mode. A copied SO has no
+         * new internal id yet, so treat unsaved create as cleanup-eligible and
+         * let the residue checks decide whether anything actually clears.
+         */
+        var mode = String(pageMode || '').toLowerCase();
+        var id = rec.id || '';
+        return !id && (mode === 'create' || mode === 'copy' || mode === '');
+    }
+
+    function scheduleCopyOrderCleanupRetries() {
+        for (var i = 0; i < COPY_CLEANUP_RETRY_DELAYS.length; i++) {
+            setTimeout(function () {
+                try { clearCopiedOrderSourcing(currentRecord.get(), 'pageInit-copy-retry'); } catch (e) { logErr('copy cleanup retry failed', e); }
+            }, COPY_CLEANUP_RETRY_DELAYS[i]);
+        }
+    }
+
+    function clearCopiedOrderSourcing(rec, reason) {
+        if (!rec || copyCleanupInProgress) return 0;
+
+        var cleared = 0;
+        var lineCount;
+        try { lineCount = rec.getLineCount({ sublistId: SUBLIST }); } catch (e) { return 0; }
+
+        suppressValidation = true;
+        copyCleanupInProgress = true;
+        try {
+            for (var i = 0; i < lineCount; i++) {
+                if (!lineHasCopiedSourcingResidue(rec, i)) continue;
+
+                try {
+                    rec.selectLine({ sublistId: SUBLIST, line: i });
+                    clearCurrentLineSourcingFields(rec, reason);
+                    rec.commitLine({ sublistId: SUBLIST, ignoreRecalc: true });
+                    cleared++;
+                } catch (lineErr) {
+                    logErr('copy cleanup line failed', lineErr, { reason: reason, line: i + 1 });
+                }
+            }
+        } finally {
+            copyCleanupInProgress = false;
+            suppressValidation = false;
+        }
+
+        if (cleared) {
+            dbg('clearCopiedOrderSourcing:done', { reason: reason, cleared: cleared });
+            injectButtonsWithRetry();
+        }
+        return cleared;
+    }
+
+    function clearCopiedCurrentLineIfNeeded(rec, reason, allowCopyMode) {
+        if (!rec || copyCleanupInProgress) return false;
+        if (isCopyCleanupMode(rec) && !allowCopyMode) return false;
+
+        if (!currentLineHasCopiedSourcingResidue(rec)) return false;
+
+        var lineId = getCurrentLineIdClient(rec);
+        if (!isCopyCleanupMode(rec) && lineId && initialLineIds && initialLineIds[lineId]) {
+            return false;
+        }
+
+        clearCurrentLineSourcingFields(rec, reason);
+        dbg('clearCopiedCurrentLineIfNeeded:done', { reason: reason, lineId: lineId || '(new)' });
+        return true;
+    }
+
+    function lineHasCopiedSourcingResidue(rec, lineIdx) {
+        return isPopulated(safeLineValue(rec, FIELD.LINKED_TO, lineIdx)) ||
+            isPopulated(safeLineValue(rec, FIELD.PROCESSED, lineIdx)) ||
+            isPopulated(safeLineValue(rec, FIELD.ERROR, lineIdx)) ||
+            isPopulated(safeLineValue(rec, FIELD.FROM_LOC, lineIdx)) ||
+            isPopulated(safeLineValue(rec, FIELD.QTY_TRANSFER, lineIdx));
+    }
+
+    function currentLineHasCopiedSourcingResidue(rec) {
+        return isPopulated(safeCurrentLineValue(rec, FIELD.LINKED_TO)) ||
+            isPopulated(safeCurrentLineValue(rec, FIELD.PROCESSED)) ||
+            isPopulated(safeCurrentLineValue(rec, FIELD.ERROR)) ||
+            isPopulated(safeCurrentLineValue(rec, FIELD.FROM_LOC)) ||
+            isPopulated(safeCurrentLineValue(rec, FIELD.QTY_TRANSFER));
+    }
+
+    function clearCurrentLineSourcingFields(rec, reason) {
+        if (!rec) return;
+
+        if (CLEAR_METHOD_ON_COPY) {
+            setCurrentLineValueQuiet(rec, FIELD.METHOD, '');
+        }
+        setCurrentLineValueQuiet(rec, FIELD.LINKED_TO, '');
+        setCurrentLineValueQuiet(rec, FIELD.PROCESSED, false);
+        setCurrentLineValueQuiet(rec, FIELD.ERROR, '');
+        setCurrentLineValueQuiet(rec, FIELD.FROM_LOC, '');
+        setCurrentLineValueQuiet(rec, FIELD.QTY_TRANSFER, '');
+        dbg('clearCurrentLineSourcingFields', { reason: reason });
+    }
+
+    function setCurrentLineValueQuiet(rec, fieldId, value) {
+        try {
+            rec.setCurrentSublistValue({
+                sublistId: SUBLIST,
+                fieldId: fieldId,
+                value: value,
+                ignoreFieldChange: true
+            });
+            return true;
+        } catch (e) {
+            logErr('setCurrentLineValueQuiet failed', e, { fieldId: fieldId });
+            return false;
+        }
+    }
+
+    function isPopulated(value) {
+        if (value === null || value === undefined || value === '') return false;
+        if (value === false || value === 'F' || value === 'false') return false;
+        if (Object.prototype.toString.call(value) === '[object Array]' && value.length === 0) return false;
+        return true;
     }
 
     // ---------------- Validation helpers ----------------
@@ -336,7 +509,7 @@ define(['N/url', 'N/currentRecord', 'N/ui/dialog', 'N/search'], function (url, c
 
         var processed = safeCurrentLineValue(rec, FIELD.PROCESSED);
         var linkedTo = safeCurrentLineValue(rec, FIELD.LINKED_TO);
-        if (processed || linkedTo) return true;
+        if (isPopulated(processed) || isPopulated(linkedTo)) return true;
 
         var lineIdx = -1;
         try { lineIdx = rec.getCurrentSublistIndex({ sublistId: SUBLIST }); } catch (e) {}
@@ -360,7 +533,7 @@ define(['N/url', 'N/currentRecord', 'N/ui/dialog', 'N/search'], function (url, c
 
             var processed = safeLineValue(rec, FIELD.PROCESSED, i);
             var linkedTo = safeLineValue(rec, FIELD.LINKED_TO, i);
-            if (processed || linkedTo) continue;
+            if (isPopulated(processed) || isPopulated(linkedTo)) continue;
 
             var ok = validateSourcingRuleValues(rec, i, {
                 itemType: safeLineValue(rec, 'itemtype', i),
@@ -446,21 +619,38 @@ define(['N/url', 'N/currentRecord', 'N/ui/dialog', 'N/search'], function (url, c
     function handleMethodChange(rec) {
         var method = String(rec.getCurrentSublistValue({ sublistId: SUBLIST, fieldId: FIELD.METHOD }) || '');
         if (method === SOURCING_METHOD_TO) {
-            var qtyTransfer = rec.getCurrentSublistValue({ sublistId: SUBLIST, fieldId: FIELD.QTY_TRANSFER });
-            if (!qtyTransfer) {
-                var lineQty = rec.getCurrentSublistValue({ sublistId: SUBLIST, fieldId: 'quantity' });
-                if (lineQty) {
-                    rec.setCurrentSublistValue({ sublistId: SUBLIST, fieldId: FIELD.QTY_TRANSFER, value: lineQty, ignoreFieldChange: true });
-                }
-            }
+            syncQtyToTransferFromLineQuantity(rec);
         } else {
             rec.setCurrentSublistValue({ sublistId: SUBLIST, fieldId: FIELD.FROM_LOC, value: '', ignoreFieldChange: true });
             rec.setCurrentSublistValue({ sublistId: SUBLIST, fieldId: FIELD.QTY_TRANSFER, value: '', ignoreFieldChange: true });
         }
     }
 
+    function syncQtyToTransferFromLineQuantity(rec) {
+        if (!rec || suppressValidation || isLineLocked(rec)) return;
+
+        var method = String(rec.getCurrentSublistValue({ sublistId: SUBLIST, fieldId: FIELD.METHOD }) || '');
+        if (method !== SOURCING_METHOD_TO) return;
+
+        var qtyRequired = calculateCurrentQtyToTransfer(rec);
+        var value = qtyRequired > 0 ? qtyRequired : '';
+        var currentValue = rec.getCurrentSublistValue({ sublistId: SUBLIST, fieldId: FIELD.QTY_TRANSFER });
+
+        if (String(currentValue == null ? '' : currentValue) === String(value == null ? '' : value)) return;
+
+        rec.setCurrentSublistValue({
+            sublistId: SUBLIST,
+            fieldId: FIELD.QTY_TRANSFER,
+            value: value,
+            ignoreFieldChange: true
+        });
+        try {
+            rec.setCurrentSublistValue({ sublistId: SUBLIST, fieldId: FIELD.ERROR, value: '', ignoreFieldChange: true });
+        } catch (e) {}
+    }
+
     function handleBodyFieldChange(context) {
-        // Currently passive — saveRecord catches everything. Could add live alerts here later.
+        // Currently passive. saveRecord catches protected header changes.
     }
 
     function handlePickerSelection(payload) {
@@ -476,17 +666,14 @@ define(['N/url', 'N/currentRecord', 'N/ui/dialog', 'N/search'], function (url, c
                 }
             }
 
-            // Don't write to locked lines — picker would have opened in read-only
-            // mode, but if for any reason it didn't, this is the safety net.
             var processed = rec.getCurrentSublistValue({ sublistId: SUBLIST, fieldId: FIELD.PROCESSED });
             var linkedTo = rec.getCurrentSublistValue({ sublistId: SUBLIST, fieldId: FIELD.LINKED_TO });
-            if (processed || linkedTo) {
+            if (isPopulated(processed) || isPopulated(linkedTo)) {
                 dbg('handlePickerSelection:skipLocked');
                 pendingPickerLineIndex = null;
                 return;
             }
 
-            // Empty locId means user cleared the selection in the picker — clear the field.
             var newLoc = payload && payload.locId ? payload.locId : '';
             rec.setCurrentSublistValue({
                 sublistId: SUBLIST, fieldId: FIELD.FROM_LOC,
@@ -513,7 +700,7 @@ define(['N/url', 'N/currentRecord', 'N/ui/dialog', 'N/search'], function (url, c
 
         if (method !== SOURCING_METHOD_TO) { dialog.alert({ title: 'Set Sourcing Method', message: 'Set Sourcing Method to "Transfer Order" first.' }); return false; }
         if (!item) { dialog.alert({ title: 'Item Required', message: 'Select an item first.' }); return false; }
-        if (!qtyRequired || qtyRequired <= 0) { dialog.alert({ title: 'Qty Required', message: 'Line has no Qty to Transfer, backordered qty, or line quantity.' }); return false; }
+        if (!qtyRequired || qtyRequired <= 0) { dialog.alert({ title: 'Qty Required', message: 'Line has no Qty to Transfer or line quantity.' }); return false; }
         if (!destLoc) { dialog.alert({ title: 'Destination Location Required', message: 'Set a Location on this line or on the SO header.' }); return false; }
         if (!subsidiary) { dialog.alert({ title: 'Subsidiary Required', message: 'The SO must have a subsidiary.' }); return false; }
         return true;
@@ -527,16 +714,11 @@ define(['N/url', 'N/currentRecord', 'N/ui/dialog', 'N/search'], function (url, c
             var subsidiary = rec.getValue({ fieldId: 'subsidiary' });
             var soId = rec.id || '';
             var lineIndex = rec.getCurrentSublistIndex({ sublistId: SUBLIST });
-
-            // Pass the line's current from_location so the picker can pre-select it
             var currentFromLoc = rec.getCurrentSublistValue({ sublistId: SUBLIST, fieldId: FIELD.FROM_LOC }) || '';
 
-            // Determine if we should open in read-only mode:
-            //   - line is locked (linked TO exists), OR
-            //   - page is in view mode
             var processed = rec.getCurrentSublistValue({ sublistId: SUBLIST, fieldId: FIELD.PROCESSED });
             var linkedTo = rec.getCurrentSublistValue({ sublistId: SUBLIST, fieldId: FIELD.LINKED_TO });
-            var locked = !!processed || !!linkedTo;
+            var locked = isPopulated(processed) || isPopulated(linkedTo);
             var isViewMode = (typeof pageMode === 'string' && pageMode === 'view');
             var readOnly = locked || isViewMode;
 
@@ -566,10 +748,25 @@ define(['N/url', 'N/currentRecord', 'N/ui/dialog', 'N/search'], function (url, c
         var qtyToTransfer = parseFloat(rec.getCurrentSublistValue({ sublistId: SUBLIST, fieldId: FIELD.QTY_TRANSFER }) || '0');
         if (qtyToTransfer > 0) return qtyToTransfer;
 
-        var bo = parseFloat(rec.getCurrentSublistValue({ sublistId: SUBLIST, fieldId: 'quantitybackordered' }) || '0');
-        if (bo > 0) return bo;
+        return calculateCurrentQtyToTransfer(rec);
+    }
 
-        return parseFloat(rec.getCurrentSublistValue({ sublistId: SUBLIST, fieldId: 'quantity' }) || '0');
+    function calculateCurrentQtyToTransfer(rec) {
+        var ordered = getCurrentNumericValue(rec, LINE_FIELD.QUANTITY);
+        return ordered !== null && ordered > 0 ? ordered : 0;
+    }
+
+    function getCurrentNumericValue(rec, fieldId) {
+        var value;
+        try {
+            value = rec.getCurrentSublistValue({ sublistId: SUBLIST, fieldId: fieldId });
+        } catch (e) {
+            return null;
+        }
+        if (value === null || value === undefined || value === '') return null;
+
+        var parsed = parseFloat(value);
+        return isNaN(parsed) ? null : parsed;
     }
 
     // ---------------- DOM injection ----------------
@@ -604,18 +801,12 @@ define(['N/url', 'N/currentRecord', 'N/ui/dialog', 'N/search'], function (url, c
         try { lineCount = rec.getLineCount({ sublistId: SUBLIST }); } catch (e) { return; }
         ensureHeaderCell(table);
 
-        // Walk actual DOM rows under tbody rather than guessing IDs. After
-        // Copy Line, NetSuite may not number new rows as item_row_N+1 — it
-        // sometimes inserts with non-sequential IDs or re-paints out of order.
         var tbody = table.querySelector('tbody');
         if (!tbody) { dbg('injectButtons:noTbody'); return; }
 
-        // Get all data rows (skip header/totals rows that lack item_row_ id)
         var allRows = tbody.querySelectorAll('tr[id^="item_row_"]');
         dbg('injectButtons:rows', { domRows: allRows.length, recordLines: lineCount });
 
-        // Map each DOM row to a record line index. The DOM order should match
-        // the record line order; iterate in document order.
         var currentLine = -1;
         try { currentLine = rec.getCurrentSublistIndex({ sublistId: SUBLIST }); } catch (ignoreCurrent) {}
 
@@ -627,16 +818,12 @@ define(['N/url', 'N/currentRecord', 'N/ui/dialog', 'N/search'], function (url, c
             } else if (i < lineCount) {
                 method = String(rec.getSublistValue({ sublistId: SUBLIST, fieldId: FIELD.METHOD, line: i }) || '');
             }
-            // Button is now informational/edit affordance — show on every
-            // TO-method line, locked or not. Popup adapts (read-only or editable).
             var shouldShow = (method === SOURCING_METHOD_TO);
-	
+
             dbg('injectButtons:line', { idx: i, rowId: row.id, method: method, shouldShow: shouldShow });
             syncPickButtonCell(row, i, shouldShow, false);
         }
 
-        // New, uncommitted lines may be rendered as NetSuite's current editor
-        // row and may not appear in the committed item_row_N set above.
         var currentMethod = '';
         try {
             currentMethod = String(rec.getCurrentSublistValue({ sublistId: SUBLIST, fieldId: FIELD.METHOD }) || '');
@@ -754,7 +941,7 @@ define(['N/url', 'N/currentRecord', 'N/ui/dialog', 'N/search'], function (url, c
         for (var i = 0; i < lineCount; i++) {
             var processed = rec.getSublistValue({ sublistId: SUBLIST, fieldId: FIELD.PROCESSED, line: i });
             var linkedTo = rec.getSublistValue({ sublistId: SUBLIST, fieldId: FIELD.LINKED_TO, line: i });
-            if (!processed && !linkedTo) continue;
+            if (!isPopulated(processed) && !isPopulated(linkedTo)) continue;
 
             var id = getLineIdClient(rec, i);
             if (!id) continue;
@@ -770,6 +957,17 @@ define(['N/url', 'N/currentRecord', 'N/ui/dialog', 'N/search'], function (url, c
         return map;
     }
 
+    function buildLineIdSetClient(rec) {
+        var set = {};
+        var lineCount;
+        try { lineCount = rec.getLineCount({ sublistId: SUBLIST }); } catch (e) { return set; }
+        for (var i = 0; i < lineCount; i++) {
+            var id = getLineIdClient(rec, i);
+            if (id) set[id] = true;
+        }
+        return set;
+    }
+
     function buildLineIdMapClient(rec) {
         var map = {};
         var lineCount;
@@ -779,6 +977,18 @@ define(['N/url', 'N/currentRecord', 'N/ui/dialog', 'N/search'], function (url, c
             if (id) map[id] = i;
         }
         return map;
+    }
+
+    function getCurrentLineIdClient(rec) {
+        try {
+            var id = rec.getCurrentSublistValue({ sublistId: SUBLIST, fieldId: 'line' });
+            if (id) return String(id);
+        } catch (e) {}
+        try {
+            var u = rec.getCurrentSublistValue({ sublistId: SUBLIST, fieldId: 'lineuniquekey' });
+            if (u) return String(u);
+        } catch (e) {}
+        return null;
     }
 
     function getLineIdClient(rec, idx) {
@@ -845,21 +1055,11 @@ define(['N/url', 'N/currentRecord', 'N/ui/dialog', 'N/search'], function (url, c
         return blocking;
     }
 
-    function anyLinkedTOsInRecord(rec) {
-        try {
-            var lc = rec.getLineCount({ sublistId: SUBLIST });
-            for (var i = 0; i < lc; i++) {
-                if (rec.getSublistValue({ sublistId: SUBLIST, fieldId: FIELD.LINKED_TO, line: i })) return true;
-            }
-        } catch (e) {}
-        return false;
-    }
-
     function isLineLocked(rec) {
         try {
             var processed = rec.getCurrentSublistValue({ sublistId: SUBLIST, fieldId: FIELD.PROCESSED });
             var linkedTo = rec.getCurrentSublistValue({ sublistId: SUBLIST, fieldId: FIELD.LINKED_TO });
-            return !!processed || !!linkedTo;
+            return isPopulated(processed) || isPopulated(linkedTo);
         } catch (e) { return false; }
     }
 
