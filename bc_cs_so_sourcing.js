@@ -1023,7 +1023,6 @@ define(['N/url', 'N/currentRecord', 'N/ui/dialog', 'N/search', 'N/runtime'], fun
         try { rec = currentRecord.get(); } catch (e) { return; }
         var lineCount;
         try { lineCount = rec.getLineCount({ sublistId: SUBLIST }); } catch (e) { return; }
-        ensureHeaderCell(table);
 
         var tbody = table.querySelector('tbody');
         if (!tbody) { dbg('injectButtons:noTbody'); return; }
@@ -1064,19 +1063,8 @@ define(['N/url', 'N/currentRecord', 'N/ui/dialog', 'N/search', 'N/runtime'], fun
     function syncPickButtonCell(row, lineIndex, shouldShow, useCurrentLine) {
         if (!row) return;
 
-        var cell = row.querySelector('td.' + BTN_CELL_CLASS);
-        if (!cell) {
-            cell = document.createElement('td');
-            cell.className = BTN_CELL_CLASS;
-            cell.style.padding = '2px 6px';
-            cell.style.whiteSpace = 'nowrap';
-            var anchor = findLinkedToTd(row);
-            if (anchor && anchor.parentNode === row) {
-                row.insertBefore(cell, anchor.nextSibling);
-            } else {
-                row.appendChild(cell);
-            }
-        }
+        var cell = findSourceTd(row);
+        if (!cell) return;
 
         if (shouldShow) {
             var handler = useCurrentLine
@@ -1089,6 +1077,22 @@ define(['N/url', 'N/currentRecord', 'N/ui/dialog', 'N/search', 'N/runtime'], fun
         } else if (cell.innerHTML) {
             cell.innerHTML = '';
         }
+    }
+
+    function findSourceTd(row) {
+        if (!row) return null;
+        var el = row.querySelector(
+            '[id^="custcol_bc_source_popup"],' +
+            '[id^="inpt_custcol_bc_source_popup"],' +
+            '[name^="custcol_bc_source_popup"]'
+        );
+        if (!el) return null;
+        var td = el;
+        while (td && td !== row) {
+            if (td.tagName === 'TD' || td.tagName === 'TH') return td;
+            td = td.parentNode;
+        }
+        return null;
     }
 
     function findCurrentEditorRow(table) {
@@ -1126,49 +1130,10 @@ define(['N/url', 'N/currentRecord', 'N/ui/dialog', 'N/search', 'N/runtime'], fun
     }
 
     function ensureHeaderCell(table) {
-        var thead = table.querySelector('thead');
-        if (!thead) return;
-        var hr = thead.querySelector('tr');
-        if (!hr || hr.querySelector('th.' + BTN_CELL_CLASS)) return;
-        var th = document.createElement('th');
-        th.className = BTN_CELL_CLASS;
-        th.textContent = 'Pick';
-        th.style.padding = '2px 6px';
-        var idx = getLinkedToColIdx(table);
-        if (idx >= 0 && (idx + 1) < hr.children.length) {
-            hr.insertBefore(th, hr.children[idx + 1]);
-        } else {
-            hr.appendChild(th);
-        }
-    }
-
-    function findLinkedToTd(row) {
-        if (!row) return null;
-        var el = row.querySelector(
-            '[id^="inpt_custcol_bc_linked_to"],' +
-            '[id^="custcol_bc_linked_to"],' +
-            '[name^="custcol_bc_linked_to"]'
-        );
-        if (!el) return null;
-        var td = el;
-        while (td && td !== row) {
-            if (td.tagName === 'TD' || td.tagName === 'TH') return td;
-            td = td.parentNode;
-        }
-        return null;
-    }
-
-    function getLinkedToColIdx(table) {
-        var tbody = table.querySelector('tbody');
-        if (!tbody) return -1;
-        var rows = tbody.querySelectorAll('tr[id^="item_row_"]');
-        for (var i = 0; i < rows.length; i++) {
-            var td = findLinkedToTd(rows[i]);
-            if (td && td.parentNode === rows[i]) {
-                return Array.prototype.indexOf.call(rows[i].children, td);
-            }
-        }
-        return -1;
+        // No longer needed: the header is rendered natively by NetSuite from the
+        // custcol_bc_source field definition. Kept as a no-op stub in case any
+        // external caller still references it.
+        return;
     }
 
     function startObserver() {
