@@ -1070,7 +1070,12 @@ define(['N/url', 'N/currentRecord', 'N/ui/dialog', 'N/search', 'N/runtime'], fun
             cell.className = BTN_CELL_CLASS;
             cell.style.padding = '2px 6px';
             cell.style.whiteSpace = 'nowrap';
-            row.appendChild(cell);
+            var anchor = findLinkedToTd(row);
+            if (anchor && anchor.parentNode === row) {
+                row.insertBefore(cell, anchor.nextSibling);
+            } else {
+                row.appendChild(cell);
+            }
         }
 
         if (shouldShow) {
@@ -1129,7 +1134,41 @@ define(['N/url', 'N/currentRecord', 'N/ui/dialog', 'N/search', 'N/runtime'], fun
         th.className = BTN_CELL_CLASS;
         th.textContent = 'Pick';
         th.style.padding = '2px 6px';
-        hr.appendChild(th);
+        var idx = getLinkedToColIdx(table);
+        if (idx >= 0 && (idx + 1) < hr.children.length) {
+            hr.insertBefore(th, hr.children[idx + 1]);
+        } else {
+            hr.appendChild(th);
+        }
+    }
+
+    function findLinkedToTd(row) {
+        if (!row) return null;
+        var el = row.querySelector(
+            '[id^="inpt_custcol_bc_linked_to"],' +
+            '[id^="custcol_bc_linked_to"],' +
+            '[name^="custcol_bc_linked_to"]'
+        );
+        if (!el) return null;
+        var td = el;
+        while (td && td !== row) {
+            if (td.tagName === 'TD' || td.tagName === 'TH') return td;
+            td = td.parentNode;
+        }
+        return null;
+    }
+
+    function getLinkedToColIdx(table) {
+        var tbody = table.querySelector('tbody');
+        if (!tbody) return -1;
+        var rows = tbody.querySelectorAll('tr[id^="item_row_"]');
+        for (var i = 0; i < rows.length; i++) {
+            var td = findLinkedToTd(rows[i]);
+            if (td && td.parentNode === rows[i]) {
+                return Array.prototype.indexOf.call(rows[i].children, td);
+            }
+        }
+        return -1;
     }
 
     function startObserver() {
