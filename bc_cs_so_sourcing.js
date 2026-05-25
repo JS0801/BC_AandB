@@ -1081,18 +1081,11 @@ define(['N/url', 'N/currentRecord', 'N/ui/dialog', 'N/search', 'N/runtime'], fun
 
     function findSourceTd(row) {
         if (!row) return null;
-        var el = row.querySelector(
-            '[id^="custcol_bc_source_popup"],' +
-            '[id^="inpt_custcol_bc_source_popup"],' +
-            '[name^="custcol_bc_source_popup"]'
-        );
-        if (!el) return null;
-        var td = el;
-        while (td && td !== row) {
-            if (td.tagName === 'TD' || td.tagName === 'TH') return td;
-            td = td.parentNode;
-        }
-        return null;
+        var td = row.querySelector('td[data-ns-tooltip="Source"]');
+        if (!td) return null;
+        // Write into the inner content div so NetSuite's cell wrapper structure
+        // (focusedrowcell handlers, padding divs, etc.) stays intact.
+        return td.querySelector('div') || td;
     }
 
     function findCurrentEditorRow(table) {
