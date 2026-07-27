@@ -14,6 +14,7 @@ define(['N/record', 'N/log', 'N/search'], function (record, log, search) {
     MANLIFT: 'custcol_bc_manlift',
     GREASE_GUN: 'custcol_bc_grease_gun',
     VR_TRAILER: 'custcol_bc_vr_trailer',
+    RELATED_TIME_ENTRIES: 'custcol_bc_related_time_entries',
     ITEM_ROLE: 'custitem_bc_fsm_item_role',
     ITEM_OT: 'custitem_bc_fsm_ot_item',
 
@@ -35,6 +36,7 @@ define(['N/record', 'N/log', 'N/search'], function (record, log, search) {
   };
 
   const OXY_CUSTOMER_ID = '1480';
+  const FALLBACK_TEST_RATE = 100;
   const SHOP_DELIVERY_TASK_TYPES = ['15', '16', '17', '18'];
   const ASSET_RECORD_TYPE = 'customrecord_nx_asset';
   const TIMEBILL_RECORD_TYPE = 'timebill';
@@ -118,18 +120,18 @@ define(['N/record', 'N/log', 'N/search'], function (record, log, search) {
 
       const splitResult = runOtSplit(timebill, totalHours);
       const sourceTimebillIds = [timebillId].concat(splitResult.createdTimebillIds);
-      const replicatedCount = replicateTeamTime(sourceTimebillIds, task, leadTechId);
-      if (!splitResult.originalSavedWithProcessed) {
-        markOriginalProcessed(timebillId);
-        splitResult.originalSavedWithProcessed = true;
-      }
+      const teamResult = replicateTeamTime(sourceTimebillIds, task, leadTechId);
+      const replicatedCount = teamResult.count;
+      const relatedTimeEntryIds = splitResult.createdTimebillIds.concat(teamResult.createdTimebillIds);
+      updateOriginalTimebillProcessing(timebillId, relatedTimeEntryIds);
 
       const taskTypeId = String(task.getValue(FIELD.TASK_TYPE) || '');
       if (SHOP_DELIVERY_TASK_TYPES.indexOf(taskTypeId) !== -1) {
         log.audit('FSM Time Automation complete', {
           timebillId: timebillId,
           message: 'Shop/Delivery task. SO work skipped.',
-          replicatedCount: replicatedCount
+          replicatedCount: replicatedCount,
+          relatedTimeEntryIds: relatedTimeEntryIds
         });
         return;
       }
@@ -171,10 +173,10 @@ define(['N/record', 'N/log', 'N/search'], function (record, log, search) {
             { fieldId: 'subsidiary', value: soInfo.setupValues.subsidiary },
             { fieldId: 'location', value: soInfo.setupValues.location },
             { fieldId: FIELD.SO_ASSET, value: soInfo.setupValues.asset },
+            { fieldId: FIELD.SO_CASE, value: soInfo.setupValues.caseId },
             { fieldId: 'job', value: soInfo.setupValues.job }
           ]
         });
-        trySubmitSalesOrderCase(salesOrderId, caseId);
         logAuditJson('Case SO writeback JSON', {
           recordType: 'supportcase',
           id: caseId,
@@ -204,6 +206,7 @@ define(['N/record', 'N/log', 'N/search'], function (record, log, search) {
         timebillId: timebillId,
         salesOrderId: salesOrderId,
         replicatedCount: replicatedCount,
+        relatedTimeEntryIds: relatedTimeEntryIds,
         rtHours: splitResult.rtHours,
         otHours: splitResult.otHours
       });
@@ -324,8 +327,7 @@ define(['N/record', 'N/log', 'N/search'], function (record, log, search) {
       rtHours: totalHours,
       otHours: 0,
       otItemId: '',
-      createdTimebillIds: [],
-      originalSavedWithProcessed: false
+      createdTimebillIds: []
     };
 
     if (!start || !end || !originalItemId) {
@@ -369,7 +371,6 @@ define(['N/record', 'N/log', 'N/search'], function (record, log, search) {
       enableSourcing: true,
       ignoreMandatoryFields: true
     });
-    result.originalSavedWithProcessed = true;
 
     for (let i = 1; i < segments.length; i++) {
       const copiedTime = record.copy({
@@ -454,10 +455,14 @@ define(['N/record', 'N/log', 'N/search'], function (record, log, search) {
   function replicateTeamTime(sourceTimebillIds, task, leadTechId) {
     const teamMembers = toArray(task.getValue(FIELD.TASK_TEAM));
     let count = 0;
+    const createdTimebillIds = [];
 
     if (!teamMembers.length) {
       log.audit('Team replication skipped', 'No team members on task ' + task.id + '.');
-      return count;
+      return {
+        count: count,
+        createdTimebillIds: createdTimebillIds
+      };
     }
 
     for (let i = 0; i < sourceTimebillIds.length; i++) {
@@ -474,77 +479,52 @@ define(['N/record', 'N/log', 'N/search'], function (record, log, search) {
         });
         copiedTime.setValue({ fieldId: FIELD.EMPLOYEE, value: employeeId });
         copiedTime.setValue({ fieldId: FIELD.PROCESSED, value: true });
-        copiedTime.save({
+        const newTimebillId = copiedTime.save({
           enableSourcing: true,
           ignoreMandatoryFields: true
         });
+        createdTimebillIds.push(newTimebillId);
         count++;
       }
     }
 
     log.audit('Team replication complete', {
       sourceCount: sourceTimebillIds.length,
-      replicatedCount: count
+      replicatedCount: count,
+      createdTimebillIds: createdTimebillIds
     });
 
-    return count;
+    return {
+      count: count,
+      createdTimebillIds: createdTimebillIds
+    };
   }
 
-  function markOriginalProcessed(timebillId) {
+  function updateOriginalTimebillProcessing(timebillId, relatedTimeEntryIds) {
+    const relatedValue = (relatedTimeEntryIds || []).join(',');
+    logAuditJson('Related time entries writeback JSON', {
+      recordType: TIMEBILL_RECORD_TYPE,
+      id: timebillId,
+      operation: 'submitFields',
+      fields: [
+        { fieldId: FIELD.PROCESSED, value: true },
+        { fieldId: FIELD.RELATED_TIME_ENTRIES, value: relatedValue }
+      ],
+      relatedTimeEntryIds: relatedTimeEntryIds || []
+    });
+
     record.submitFields({
       type: TIMEBILL_RECORD_TYPE,
       id: timebillId,
       values: {
-        [FIELD.PROCESSED]: true
+        [FIELD.PROCESSED]: true,
+        [FIELD.RELATED_TIME_ENTRIES]: relatedValue
       },
       options: {
         enableSourcing: false,
         ignoreMandatoryFields: true
       }
     });
-  }
-
-  function trySubmitSalesOrderCase(salesOrderId, caseId) {
-    try {
-      logAuditJson('SO Case field attempt JSON', {
-        recordType: 'salesorder',
-        id: salesOrderId,
-        operation: 'submitFields',
-        salesOrderId: salesOrderId,
-        fields: [
-          { fieldId: FIELD.SO_CASE, value: caseId }
-        ]
-      });
-      record.submitFields({
-        type: record.Type.SALES_ORDER,
-        id: salesOrderId,
-        values: {
-          [FIELD.SO_CASE]: caseId
-        },
-        options: {
-          enableSourcing: false,
-          ignoreMandatoryFields: true
-        }
-      });
-      logAuditJson('SO Case field updated JSON', {
-        recordType: 'salesorder',
-        id: salesOrderId,
-        operation: 'submitFields',
-        salesOrderId: salesOrderId,
-        fields: [
-          { fieldId: FIELD.SO_CASE, value: caseId }
-        ]
-      });
-    } catch (e) {
-      log.error('SO Case field skipped', JSON.stringify({
-        recordType: 'salesorder',
-        operation: 'submitFields',
-        salesOrderId: salesOrderId,
-        caseId: caseId,
-        fieldId: FIELD.SO_CASE,
-        message: e.message
-      }));
-    }
   }
 
   function getSalesOrder(task, caseId) {
@@ -597,10 +577,8 @@ define(['N/record', 'N/log', 'N/search'], function (record, log, search) {
         { fieldId: 'subsidiary', value: setupValues.subsidiary },
         { fieldId: 'location', value: setupValues.location },
         { fieldId: FIELD.SO_ASSET, value: setupValues.asset },
+        { fieldId: FIELD.SO_CASE, value: setupValues.caseId },
         { fieldId: 'job', value: setupValues.job }
-      ],
-      postSaveFields: [
-        { fieldId: FIELD.SO_CASE, value: setupValues.caseId }
       ]
     });
 
@@ -609,6 +587,7 @@ define(['N/record', 'N/log', 'N/search'], function (record, log, search) {
     setIfValue(salesOrder, 'subsidiary', setupValues.subsidiary);
     setIfValue(salesOrder, 'location', setupValues.location);
     setIfValue(salesOrder, FIELD.SO_ASSET, setupValues.asset);
+    setIfValue(salesOrder, FIELD.SO_CASE, setupValues.caseId);
     setIfValue(salesOrder, 'job', setupValues.job);
 
     log.audit('Sales Order created in memory', 'New SO will be saved after line updates.');
@@ -682,6 +661,16 @@ define(['N/record', 'N/log', 'N/search'], function (record, log, search) {
         line: line
       }));
       const newQuantity = roundHours(existingQuantity + toNumber(quantity));
+      const lineFields = [
+        { fieldId: 'quantity', value: newQuantity }
+      ];
+      salesOrder.selectLine({ sublistId: 'item', line: line });
+      salesOrder.setCurrentSublistValue({
+        sublistId: 'item',
+        fieldId: 'quantity',
+        value: newQuantity
+      });
+      const rateInfo = setFallbackRateIfMissing(salesOrder, lineFields, label);
       logAuditJson('SO item line field JSON', {
         label: label,
         recordType: 'salesorder',
@@ -692,39 +681,35 @@ define(['N/record', 'N/log', 'N/search'], function (record, log, search) {
           fieldId: 'item',
           value: itemId
         },
-        fields: [
-          { fieldId: 'quantity', value: newQuantity }
-        ],
+        fields: lineFields,
         calculation: {
           existingQuantity: existingQuantity,
           quantityToAdd: toNumber(quantity),
           newQuantity: newQuantity
-        }
-      });
-      salesOrder.selectLine({ sublistId: 'item', line: line });
-      salesOrder.setCurrentSublistValue({
-        sublistId: 'item',
-        fieldId: 'quantity',
-        value: newQuantity
+        },
+        rateInfo: rateInfo
       });
       salesOrder.commitLine({ sublistId: 'item' });
       log.audit(label + ' updated', 'Added quantity ' + quantity + ' to existing line.');
       return;
     }
 
+    const lineFields = [
+      { fieldId: 'item', value: itemId },
+      { fieldId: 'quantity', value: toNumber(quantity) }
+    ];
+    salesOrder.selectNewLine({ sublistId: 'item' });
+    salesOrder.setCurrentSublistValue({ sublistId: 'item', fieldId: 'item', value: itemId });
+    salesOrder.setCurrentSublistValue({ sublistId: 'item', fieldId: 'quantity', value: toNumber(quantity) });
+    const rateInfo = setFallbackRateIfMissing(salesOrder, lineFields, label);
     logAuditJson('SO item line field JSON', {
       label: label,
       recordType: 'salesorder',
       sublistId: 'item',
       operation: 'add new line',
-      fields: [
-        { fieldId: 'item', value: itemId },
-        { fieldId: 'quantity', value: toNumber(quantity) }
-      ]
+      fields: lineFields,
+      rateInfo: rateInfo
     });
-    salesOrder.selectNewLine({ sublistId: 'item' });
-    salesOrder.setCurrentSublistValue({ sublistId: 'item', fieldId: 'item', value: itemId });
-    salesOrder.setCurrentSublistValue({ sublistId: 'item', fieldId: 'quantity', value: toNumber(quantity) });
     salesOrder.commitLine({ sublistId: 'item' });
     log.audit(label + ' added', 'Quantity ' + quantity + '.');
   }
@@ -752,21 +737,71 @@ define(['N/record', 'N/log', 'N/search'], function (record, log, search) {
       return;
     }
 
+    const lineFields = [
+      { fieldId: 'item', value: itemId },
+      { fieldId: 'quantity', value: toNumber(quantity) }
+    ];
+    salesOrder.selectNewLine({ sublistId: 'item' });
+    salesOrder.setCurrentSublistValue({ sublistId: 'item', fieldId: 'item', value: itemId });
+    salesOrder.setCurrentSublistValue({ sublistId: 'item', fieldId: 'quantity', value: toNumber(quantity) });
+    const rateInfo = setFallbackRateIfMissing(salesOrder, lineFields, label);
     logAuditJson('SO item line field JSON', {
       label: label,
       recordType: 'salesorder',
       sublistId: 'item',
       operation: 'add new line',
-      fields: [
-        { fieldId: 'item', value: itemId },
-        { fieldId: 'quantity', value: toNumber(quantity) }
-      ]
+      fields: lineFields,
+      rateInfo: rateInfo
     });
-    salesOrder.selectNewLine({ sublistId: 'item' });
-    salesOrder.setCurrentSublistValue({ sublistId: 'item', fieldId: 'item', value: itemId });
-    salesOrder.setCurrentSublistValue({ sublistId: 'item', fieldId: 'quantity', value: toNumber(quantity) });
     salesOrder.commitLine({ sublistId: 'item' });
     log.audit(label + ' added', 'Quantity ' + quantity + '.');
+  }
+
+  function setFallbackRateIfMissing(salesOrder, lineFields, label) {
+    const sourcedRate = salesOrder.getCurrentSublistValue({
+      sublistId: 'item',
+      fieldId: 'rate'
+    });
+
+    if (hasUsableRate(sourcedRate)) {
+      return {
+        fallbackApplied: false,
+        sourcedRate: sourcedRate
+      };
+    }
+
+    try {
+      salesOrder.setCurrentSublistValue({
+        sublistId: 'item',
+        fieldId: 'price',
+        value: -1
+      });
+      lineFields.push({ fieldId: 'price', value: -1 });
+    } catch (e) {
+      log.audit(label + ' custom price level skipped', {
+        message: e.message
+      });
+    }
+
+    salesOrder.setCurrentSublistValue({
+      sublistId: 'item',
+      fieldId: 'rate',
+      value: FALLBACK_TEST_RATE
+    });
+    lineFields.push({ fieldId: 'rate', value: FALLBACK_TEST_RATE });
+
+    return {
+      fallbackApplied: true,
+      sourcedRate: sourcedRate,
+      fallbackRate: FALLBACK_TEST_RATE
+    };
+  }
+
+  function hasUsableRate(value) {
+    if (value === null || value === undefined || value === '') {
+      return false;
+    }
+    return toNumber(value) !== 0;
   }
 
   function findItemLine(salesOrder, itemId) {
