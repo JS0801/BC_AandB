@@ -161,16 +161,28 @@ define(['N/record', 'N/log', 'N/search'], function (record, log, search) {
       });
 
       if (soInfo.created) {
-        log.audit('New Sales Order saved', {
+        logAuditJson('New Sales Order saved JSON', {
+          recordType: 'salesorder',
+          operation: 'save',
           salesOrderId: salesOrderId,
           caseId: caseId,
-          customerId: task.getValue(FIELD.TASK_CUSTOMER),
-          subsidiaryId: soInfo.setupValues.subsidiary,
-          locationId: soInfo.setupValues.location,
-          assetId: soInfo.setupValues.asset,
-          jobId: soInfo.setupValues.job
+          fields: [
+            { fieldId: 'entity', value: task.getValue(FIELD.TASK_CUSTOMER) },
+            { fieldId: 'subsidiary', value: soInfo.setupValues.subsidiary },
+            { fieldId: 'location', value: soInfo.setupValues.location },
+            { fieldId: FIELD.SO_ASSET, value: soInfo.setupValues.asset },
+            { fieldId: 'job', value: soInfo.setupValues.job }
+          ]
         });
         trySubmitSalesOrderCase(salesOrderId, caseId);
+        logAuditJson('Case SO writeback JSON', {
+          recordType: 'supportcase',
+          id: caseId,
+          operation: 'submitFields',
+          fields: [
+            { fieldId: FIELD.CASE_SO, value: salesOrderId }
+          ]
+        });
         record.submitFields({
           type: record.Type.SUPPORT_CASE,
           id: caseId,
@@ -228,6 +240,7 @@ define(['N/record', 'N/log', 'N/search'], function (record, log, search) {
 
     try {
       const roleColumn = search.createColumn({ name: FIELD.ITEM_ROLE });
+      const itemRoleLog = [];
       search.create({
         type: search.Type.ITEM,
         filters: [
@@ -241,13 +254,29 @@ define(['N/record', 'N/log', 'N/search'], function (record, log, search) {
         const roleText = String(result.getText(roleColumn) || roleId);
         const key = roleToKey[roleId];
         if (key && !roleItems[key]) {
-          roleItems[key] = result.getValue({ name: 'internalid' });
+          const itemId = result.getValue({ name: 'internalid' });
+          roleItems[key] = itemId;
+          itemRoleLog.push({
+            sourceRecordType: 'item',
+            sourceFieldId: FIELD.ITEM_ROLE,
+            sourceFieldValue: roleId,
+            sourceFieldText: roleText,
+            resultInternalId: itemId,
+            configKey: key
+          });
         } else if (key) {
           log.error('Duplicate FSM item role found', 'Role "' + roleText + '" has more than one active item. Using item ' + roleItems[key] + '.');
         }
         return true;
       });
       if (Object.keys(roleItems).length) {
+        logAuditJson('FSM item role lookup JSON', {
+          searchType: 'item',
+          sourceFieldId: FIELD.ITEM_ROLE,
+          sourceFieldOperator: 'anyof',
+          sourceFieldValues: BILLING_ITEM_ROLES,
+          results: itemRoleLog
+        });
         log.audit('FSM item roles loaded', {
           itemCount: Object.keys(roleItems).length
         });
@@ -477,10 +506,14 @@ define(['N/record', 'N/log', 'N/search'], function (record, log, search) {
 
   function trySubmitSalesOrderCase(salesOrderId, caseId) {
     try {
-      log.audit('SO Case field attempt', {
+      logAuditJson('SO Case field attempt JSON', {
+        recordType: 'salesorder',
+        id: salesOrderId,
+        operation: 'submitFields',
         salesOrderId: salesOrderId,
-        fieldId: FIELD.SO_CASE,
-        caseId: caseId
+        fields: [
+          { fieldId: FIELD.SO_CASE, value: caseId }
+        ]
       });
       record.submitFields({
         type: record.Type.SALES_ORDER,
@@ -493,18 +526,24 @@ define(['N/record', 'N/log', 'N/search'], function (record, log, search) {
           ignoreMandatoryFields: true
         }
       });
-      log.audit('SO Case field updated', {
+      logAuditJson('SO Case field updated JSON', {
+        recordType: 'salesorder',
+        id: salesOrderId,
+        operation: 'submitFields',
         salesOrderId: salesOrderId,
-        fieldId: FIELD.SO_CASE,
-        caseId: caseId
+        fields: [
+          { fieldId: FIELD.SO_CASE, value: caseId }
+        ]
       });
     } catch (e) {
-      log.error('SO Case field skipped', {
+      log.error('SO Case field skipped', JSON.stringify({
+        recordType: 'salesorder',
+        operation: 'submitFields',
         salesOrderId: salesOrderId,
         caseId: caseId,
         fieldId: FIELD.SO_CASE,
         message: e.message
-      });
+      }));
     }
   }
 
@@ -549,15 +588,20 @@ define(['N/record', 'N/log', 'N/search'], function (record, log, search) {
       isDynamic: true
     });
 
-    log.audit('New Sales Order setup values', {
-      caseId: setupValues.caseId,
-      entityCustomerId: setupValues.customer,
-      trandate: setupValues.trandate,
-      subsidiaryId: setupValues.subsidiary,
-      locationId: setupValues.location,
-      assetId: setupValues.asset,
-      jobId: setupValues.job,
-      soCaseFieldId: FIELD.SO_CASE
+    logAuditJson('New Sales Order setup field JSON', {
+      recordType: 'salesorder',
+      operation: 'create',
+      fields: [
+        { fieldId: 'entity', value: setupValues.customer },
+        { fieldId: 'trandate', value: setupValues.trandate },
+        { fieldId: 'subsidiary', value: setupValues.subsidiary },
+        { fieldId: 'location', value: setupValues.location },
+        { fieldId: FIELD.SO_ASSET, value: setupValues.asset },
+        { fieldId: 'job', value: setupValues.job }
+      ],
+      postSaveFields: [
+        { fieldId: FIELD.SO_CASE, value: setupValues.caseId }
+      ]
     });
 
     setIfValue(salesOrder, 'entity', setupValues.customer);
@@ -637,17 +681,47 @@ define(['N/record', 'N/log', 'N/search'], function (record, log, search) {
         fieldId: 'quantity',
         line: line
       }));
+      const newQuantity = roundHours(existingQuantity + toNumber(quantity));
+      logAuditJson('SO item line field JSON', {
+        label: label,
+        recordType: 'salesorder',
+        sublistId: 'item',
+        operation: 'update existing line',
+        line: line,
+        match: {
+          fieldId: 'item',
+          value: itemId
+        },
+        fields: [
+          { fieldId: 'quantity', value: newQuantity }
+        ],
+        calculation: {
+          existingQuantity: existingQuantity,
+          quantityToAdd: toNumber(quantity),
+          newQuantity: newQuantity
+        }
+      });
       salesOrder.selectLine({ sublistId: 'item', line: line });
       salesOrder.setCurrentSublistValue({
         sublistId: 'item',
         fieldId: 'quantity',
-        value: roundHours(existingQuantity + toNumber(quantity))
+        value: newQuantity
       });
       salesOrder.commitLine({ sublistId: 'item' });
       log.audit(label + ' updated', 'Added quantity ' + quantity + ' to existing line.');
       return;
     }
 
+    logAuditJson('SO item line field JSON', {
+      label: label,
+      recordType: 'salesorder',
+      sublistId: 'item',
+      operation: 'add new line',
+      fields: [
+        { fieldId: 'item', value: itemId },
+        { fieldId: 'quantity', value: toNumber(quantity) }
+      ]
+    });
     salesOrder.selectNewLine({ sublistId: 'item' });
     salesOrder.setCurrentSublistValue({ sublistId: 'item', fieldId: 'item', value: itemId });
     salesOrder.setCurrentSublistValue({ sublistId: 'item', fieldId: 'quantity', value: toNumber(quantity) });
@@ -661,11 +735,33 @@ define(['N/record', 'N/log', 'N/search'], function (record, log, search) {
       return;
     }
 
-    if (findItemLine(salesOrder, itemId) >= 0) {
+    const line = findItemLine(salesOrder, itemId);
+    if (line >= 0) {
+      logAuditJson('SO item line skipped JSON', {
+        label: label,
+        recordType: 'salesorder',
+        sublistId: 'item',
+        operation: 'skip existing line',
+        line: line,
+        match: {
+          fieldId: 'item',
+          value: itemId
+        }
+      });
       log.audit(label + ' skipped', 'Line already exists.');
       return;
     }
 
+    logAuditJson('SO item line field JSON', {
+      label: label,
+      recordType: 'salesorder',
+      sublistId: 'item',
+      operation: 'add new line',
+      fields: [
+        { fieldId: 'item', value: itemId },
+        { fieldId: 'quantity', value: toNumber(quantity) }
+      ]
+    });
     salesOrder.selectNewLine({ sublistId: 'item' });
     salesOrder.setCurrentSublistValue({ sublistId: 'item', fieldId: 'item', value: itemId });
     salesOrder.setCurrentSublistValue({ sublistId: 'item', fieldId: 'quantity', value: toNumber(quantity) });
@@ -699,6 +795,10 @@ define(['N/record', 'N/log', 'N/search'], function (record, log, search) {
     if (value !== null && value !== undefined && value !== '') {
       rec.setValue({ fieldId: fieldId, value: value });
     }
+  }
+
+  function logAuditJson(title, details) {
+    log.audit(title, JSON.stringify(details));
   }
 
   function toArray(value) {
