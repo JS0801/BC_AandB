@@ -119,12 +119,13 @@ define(['N/record', 'N/log', 'N/search'], function (record, log, search) {
       const splitResult = runOtSplit(timebill, totalHours);
       const sourceTimebillIds = [timebillId].concat(splitResult.createdTimebillIds);
       const replicatedCount = replicateTeamTime(sourceTimebillIds, task, leadTechId);
+      if (!splitResult.originalSavedWithProcessed) {
+        markOriginalProcessed(timebillId);
+        splitResult.originalSavedWithProcessed = true;
+      }
 
       const taskTypeId = String(task.getValue(FIELD.TASK_TYPE) || '');
       if (SHOP_DELIVERY_TASK_TYPES.indexOf(taskTypeId) !== -1) {
-        if (!splitResult.originalSavedWithProcessed) {
-          markOriginalProcessed(timebillId);
-        }
         log.audit('FSM Time Automation complete', {
           timebillId: timebillId,
           message: 'Shop/Delivery task. SO work skipped.',
@@ -175,10 +176,6 @@ define(['N/record', 'N/log', 'N/search'], function (record, log, search) {
           caseId: caseId,
           salesOrderId: salesOrderId
         });
-      }
-
-      if (!splitResult.originalSavedWithProcessed) {
-        markOriginalProcessed(timebillId);
       }
 
       log.audit('FSM Time Automation complete', {
