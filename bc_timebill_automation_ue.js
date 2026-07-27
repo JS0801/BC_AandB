@@ -161,6 +161,15 @@ define(['N/record', 'N/log', 'N/search'], function (record, log, search) {
       });
 
       if (soInfo.created) {
+        log.audit('New Sales Order saved', {
+          salesOrderId: salesOrderId,
+          caseId: caseId,
+          customerId: task.getValue(FIELD.TASK_CUSTOMER),
+          subsidiaryId: soInfo.setupValues.subsidiary,
+          locationId: soInfo.setupValues.location,
+          assetId: soInfo.setupValues.asset,
+          jobId: soInfo.setupValues.job
+        });
         trySubmitSalesOrderCase(salesOrderId, caseId);
         record.submitFields({
           type: record.Type.SUPPORT_CASE,
@@ -468,6 +477,11 @@ define(['N/record', 'N/log', 'N/search'], function (record, log, search) {
 
   function trySubmitSalesOrderCase(salesOrderId, caseId) {
     try {
+      log.audit('SO Case field attempt', {
+        salesOrderId: salesOrderId,
+        fieldId: FIELD.SO_CASE,
+        caseId: caseId
+      });
       record.submitFields({
         type: record.Type.SALES_ORDER,
         id: salesOrderId,
@@ -478,6 +492,11 @@ define(['N/record', 'N/log', 'N/search'], function (record, log, search) {
           enableSourcing: false,
           ignoreMandatoryFields: true
         }
+      });
+      log.audit('SO Case field updated', {
+        salesOrderId: salesOrderId,
+        fieldId: FIELD.SO_CASE,
+        caseId: caseId
       });
     } catch (e) {
       log.error('SO Case field skipped', {
@@ -496,16 +515,32 @@ define(['N/record', 'N/log', 'N/search'], function (record, log, search) {
       isDynamic: false
     });
     const existingSalesOrderId = supportCase.getValue(FIELD.CASE_SO);
+    const setupValues = {
+      customer: task.getValue(FIELD.TASK_CUSTOMER),
+      trandate: new Date(),
+      subsidiary: supportCase.getValue(FIELD.CASE_SUBSIDIARY),
+      location: 1,
+      asset: task.getValue(FIELD.TASK_ASSET),
+      caseId: caseId,
+      job: task.getValue(FIELD.TASK_JOB)
+    };
 
     if (existingSalesOrderId) {
-      log.audit('Sales Order found', 'Using existing SO ' + existingSalesOrderId + '.');
+      log.audit('Sales Order found', {
+        caseId: caseId,
+        existingSalesOrderId: existingSalesOrderId,
+        taskCustomerId: setupValues.customer,
+        taskAssetId: setupValues.asset,
+        taskJobId: setupValues.job
+      });
       return {
         salesOrder: record.load({
           type: record.Type.SALES_ORDER,
           id: existingSalesOrderId,
           isDynamic: true
         }),
-        created: false
+        created: false,
+        setupValues: setupValues
       };
     }
 
@@ -514,17 +549,29 @@ define(['N/record', 'N/log', 'N/search'], function (record, log, search) {
       isDynamic: true
     });
 
-    setIfValue(salesOrder, 'entity', task.getValue(FIELD.TASK_CUSTOMER));
-    setIfValue(salesOrder, 'trandate', new Date());
-    setIfValue(salesOrder, 'subsidiary', supportCase.getValue(FIELD.CASE_SUBSIDIARY));
-    setIfValue(salesOrder, 'location', 1);
-    setIfValue(salesOrder, FIELD.SO_ASSET, task.getValue(FIELD.TASK_ASSET));
-    setIfValue(salesOrder, 'job', task.getValue(FIELD.TASK_JOB));
+    log.audit('New Sales Order setup values', {
+      caseId: setupValues.caseId,
+      entityCustomerId: setupValues.customer,
+      trandate: setupValues.trandate,
+      subsidiaryId: setupValues.subsidiary,
+      locationId: setupValues.location,
+      assetId: setupValues.asset,
+      jobId: setupValues.job,
+      soCaseFieldId: FIELD.SO_CASE
+    });
+
+    setIfValue(salesOrder, 'entity', setupValues.customer);
+    setIfValue(salesOrder, 'trandate', setupValues.trandate);
+    setIfValue(salesOrder, 'subsidiary', setupValues.subsidiary);
+    setIfValue(salesOrder, 'location', setupValues.location);
+    setIfValue(salesOrder, FIELD.SO_ASSET, setupValues.asset);
+    setIfValue(salesOrder, 'job', setupValues.job);
 
     log.audit('Sales Order created in memory', 'New SO will be saved after line updates.');
     return {
       salesOrder: salesOrder,
-      created: true
+      created: true,
+      setupValues: setupValues
     };
   }
 
