@@ -161,6 +161,7 @@ define(['N/record', 'N/log', 'N/search'], function (record, log, search) {
       });
 
       if (soInfo.created) {
+        trySubmitSalesOrderCase(salesOrderId, caseId);
         record.submitFields({
           type: record.Type.SUPPORT_CASE,
           id: caseId,
@@ -465,6 +466,29 @@ define(['N/record', 'N/log', 'N/search'], function (record, log, search) {
     });
   }
 
+  function trySubmitSalesOrderCase(salesOrderId, caseId) {
+    try {
+      record.submitFields({
+        type: record.Type.SALES_ORDER,
+        id: salesOrderId,
+        values: {
+          [FIELD.SO_CASE]: caseId
+        },
+        options: {
+          enableSourcing: false,
+          ignoreMandatoryFields: true
+        }
+      });
+    } catch (e) {
+      log.error('SO Case field skipped', {
+        salesOrderId: salesOrderId,
+        caseId: caseId,
+        fieldId: FIELD.SO_CASE,
+        message: e.message
+      });
+    }
+  }
+
   function getSalesOrder(task, caseId) {
     const supportCase = record.load({
       type: record.Type.SUPPORT_CASE,
@@ -495,7 +519,6 @@ define(['N/record', 'N/log', 'N/search'], function (record, log, search) {
     setIfValue(salesOrder, 'subsidiary', supportCase.getValue(FIELD.CASE_SUBSIDIARY));
     setIfValue(salesOrder, 'location', 1);
     setIfValue(salesOrder, FIELD.SO_ASSET, task.getValue(FIELD.TASK_ASSET));
-    setIfValue(salesOrder, FIELD.SO_CASE, caseId);
     setIfValue(salesOrder, 'job', task.getValue(FIELD.TASK_JOB));
 
     log.audit('Sales Order created in memory', 'New SO will be saved after line updates.');
