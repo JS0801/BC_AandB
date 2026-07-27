@@ -583,7 +583,7 @@ define(['N/record', 'N/log', 'N/search'], function (record, log, search) {
     });
 
     setIfValue(salesOrder, 'entity', setupValues.customer);
-    log.debug('Customer Set',salesOrder.getValue('entity'));
+    setIfValue(salesOrder, 'custbody_nx_customer', setupValues.customer);
     setIfValue(salesOrder, 'trandate', setupValues.trandate);
     setIfValue(salesOrder, 'subsidiary', setupValues.subsidiary);
     setIfValue(salesOrder, 'location', setupValues.location);
