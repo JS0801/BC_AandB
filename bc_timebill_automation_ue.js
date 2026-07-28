@@ -18,7 +18,7 @@ define(['N/record', 'N/log', 'N/search'], function (record, log, search) {
     ITEM_ROLE: 'custitem_bc_fsm_item_role',
     ITEM_OT: 'custitem_bc_fsm_ot_item',
 
-    TASK_LEAD: 'custevent_nx_task_assigned',
+    TASK_LEAD: 'assigned',
     TASK_TEAM: 'custevent_nx_task_team',
     TASK_TYPE: 'custevent_nx_task_type',
     TASK_CUSTOMER: 'custevent_nx_customer',
