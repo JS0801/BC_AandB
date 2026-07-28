@@ -612,26 +612,26 @@ define(['N/record', 'N/log', 'N/search'], function (record, log, search) {
         }
       }
   
-      const overrideIds = Object.keys(overrides || {});
-      for (let j = 0; j < overrideIds.length; j++) {
-        const overrideFieldId = overrideIds[j];
-        try {
-          newTimebill.setValue({
-            fieldId: overrideFieldId,
-            value: overrides[overrideFieldId]
-          });
-          overrideFields.push({
-            fieldId: overrideFieldId,
-            value: overrides[overrideFieldId]
-          });
-        } catch (e) {
-          skippedSetFields.push({
-            fieldId: overrideFieldId,
-            value: overrides[overrideFieldId],
-            message: e.message
-          });
-        }
-      }
+      // const overrideIds = Object.keys(overrides || {});
+      // for (let j = 0; j < overrideIds.length; j++) {
+      //   const overrideFieldId = overrideIds[j];
+      //   try {
+      //     newTimebill.setValue({
+      //       fieldId: overrideFieldId,
+      //       value: overrides[overrideFieldId]
+      //     });
+      //     overrideFields.push({
+      //       fieldId: overrideFieldId,
+      //       value: overrides[overrideFieldId]
+      //     });
+      //   } catch (e) {
+      //     skippedSetFields.push({
+      //       fieldId: overrideFieldId,
+      //       value: overrides[overrideFieldId],
+      //       message: e.message
+      //     });
+      //   }
+      // }
   
       const createLog = {
         recordType: TIMEBILL_RECORD_TYPE,
