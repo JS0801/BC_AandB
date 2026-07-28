@@ -588,6 +588,9 @@ define(['N/record', 'N/log', 'N/search'], function (record, log, search) {
       const skippedSetFields = [];
       const mappedFields = [];
       const overrideFields = [];
+
+
+      log.debug('snapshot', snapshot)
   
       for (let i = 0; i < snapshot.fieldIds.length; i++) {
         const fieldId = snapshot.fieldIds[i];
