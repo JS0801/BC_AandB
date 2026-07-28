@@ -51,9 +51,9 @@ define(['N/record', 'N/log', 'N/search'], function (record, log, search) {
   const ASSET_RECORD_TYPE = 'customrecord_nx_asset';
   const TIMEBILL_RECORD_TYPE = 'timebill';
   const TIMEBILL_SNAPSHOT_FIELDS = [
-    FIELD.TRANDATE,
     FIELD.EMPLOYEE,
     FIELD.CUSTOMER,
+    FIELD.TRANDATE,
     FIELD.TASK,
     FIELD.ITEM,
     FIELD.IS_BILLABLE,
