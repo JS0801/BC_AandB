@@ -591,6 +591,7 @@ define(['N/record', 'N/log', 'N/search'], function (record, log, search) {
 
 
       log.debug('snapshot', snapshot)
+      log.debug('overrides', overrides)
   
       for (let i = 0; i < snapshot.fieldIds.length; i++) {
         const fieldId = snapshot.fieldIds[i];
