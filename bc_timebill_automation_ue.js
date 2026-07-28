@@ -583,7 +583,7 @@ define(['N/record', 'N/log', 'N/search'], function (record, log, search) {
   function createTimebillFromSnapshot(snapshot, overrides, label) {
     const newTimebill = record.create({
       type: TIMEBILL_RECORD_TYPE,
-      isDynamic: false
+      isDynamic: true
     });
     const skippedSetFields = [];
     const mappedFields = [];
@@ -629,6 +629,7 @@ define(['N/record', 'N/log', 'N/search'], function (record, log, search) {
       } catch (e) {
         skippedSetFields.push({
           fieldId: fieldId,
+          value: snapshot.values[fieldId],
           message: e.message
         });
       }
