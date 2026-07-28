@@ -5,9 +5,14 @@
 define(['N/record', 'N/log', 'N/search'], function (record, log, search) {
   const FIELD = {
     EMPLOYEE: 'employee',
+    TRANDATE: 'trandate',
+    CUSTOMER: 'customer',
     TASK: 'casetaskevent',
     HOURS: 'hours',
     ITEM: 'item',
+    IS_BILLABLE: 'isbillable',
+    DEPARTMENT: 'department',
+    LOCATION: 'location',
     TIME_START: 'custcol_nx_time_start',
     TIME_END: 'custcol_nx_time_end',
     PROCESSED: 'custcol_bc_split_processed',
@@ -15,6 +20,11 @@ define(['N/record', 'N/log', 'N/search'], function (record, log, search) {
     GREASE_GUN: 'custcol_bc_grease_gun',
     VR_TRAILER: 'custcol_bc_vr_trailer',
     RELATED_TIME_ENTRIES: 'custcol_bc_related_time_entries',
+    NX_ASSET: 'custcol_nx_asset',
+    NX_CASE: 'custcol_nx_case',
+    NX_TASK: 'custcol_nx_task',
+    NX_PROJECT_TASK: 'custcol_nx_projecttask',
+    NX_IDEMPOTENCY_KEY: 'custcol_nx_idempotency_key',
     ITEM_ROLE: 'custitem_bc_fsm_item_role',
     ITEM_OT: 'custitem_bc_fsm_ot_item',
 
@@ -40,6 +50,26 @@ define(['N/record', 'N/log', 'N/search'], function (record, log, search) {
   const SHOP_DELIVERY_TASK_TYPES = ['15', '16', '17', '18'];
   const ASSET_RECORD_TYPE = 'customrecord_nx_asset';
   const TIMEBILL_RECORD_TYPE = 'timebill';
+  const TIMEBILL_SNAPSHOT_FIELDS = [
+    FIELD.EMPLOYEE,
+    FIELD.CUSTOMER,
+    FIELD.TRANDATE,
+    FIELD.TASK,
+    FIELD.ITEM,
+    FIELD.IS_BILLABLE,
+    FIELD.DEPARTMENT,
+    FIELD.LOCATION,
+    FIELD.TIME_START,
+    FIELD.TIME_END,
+    FIELD.HOURS,
+    FIELD.NX_ASSET,
+    FIELD.NX_CASE,
+    FIELD.NX_TASK,
+    FIELD.NX_PROJECT_TASK,
+    FIELD.MANLIFT,
+    FIELD.GREASE_GUN,
+    FIELD.VR_TRAILER
+  ];
   const ITEM_ROLE = {
     TRUCK_TOOLS: '1',
     SAFETY_FEE: '2',
@@ -372,18 +402,12 @@ define(['N/record', 'N/log', 'N/search'], function (record, log, search) {
       ignoreMandatoryFields: true
     });
 
+    const originalSnapshot = getTimebillSnapshot(savedOriginalId);
     for (let i = 1; i < segments.length; i++) {
-      const copiedTime = record.copy({
-        type: TIMEBILL_RECORD_TYPE,
-        id: savedOriginalId,
-        isDynamic: false
-      });
-      setTimeSegmentValues(copiedTime, segments[i], originalItemId, otItemId);
-      copiedTime.setValue({ fieldId: FIELD.PROCESSED, value: true });
-      const newId = copiedTime.save({
-        enableSourcing: true,
-        ignoreMandatoryFields: true
-      });
+      const overrides = getTimeSegmentOverrideValues(segments[i], originalItemId, otItemId);
+      overrides[FIELD.PROCESSED] = true;
+      overrides[FIELD.NX_IDEMPOTENCY_KEY] = '';
+      const newId = createTimebillFromSnapshot(originalSnapshot, overrides, 'OT Split');
       result.createdTimebillIds.push(newId);
     }
 
@@ -452,10 +476,20 @@ define(['N/record', 'N/log', 'N/search'], function (record, log, search) {
     timebill.setValue({ fieldId: FIELD.ITEM, value: segment.type === 'OT' ? otItemId : originalItemId });
   }
 
+  function getTimeSegmentOverrideValues(segment, originalItemId, otItemId) {
+    const values = {};
+    values[FIELD.HOURS] = segment.hours;
+    values[FIELD.TIME_START] = segment.start;
+    values[FIELD.TIME_END] = segment.end;
+    values[FIELD.ITEM] = segment.type === 'OT' ? otItemId : originalItemId;
+    return values;
+  }
+
   function replicateTeamTime(sourceTimebillIds, task, leadTechId) {
     const teamMembers = toArray(task.getValue(FIELD.TASK_TEAM));
     let count = 0;
     const createdTimebillIds = [];
+    const createdTimebillLinks = [];
 
     if (!teamMembers.length) {
       log.audit('Team replication skipped', 'No team members on task ' + task.id + '.');
@@ -466,38 +500,192 @@ define(['N/record', 'N/log', 'N/search'], function (record, log, search) {
     }
 
     for (let i = 0; i < sourceTimebillIds.length; i++) {
+      const sourceTimebillId = sourceTimebillIds[i];
+      const sourceSnapshot = getTimebillSnapshot(sourceTimebillId);
       for (let j = 0; j < teamMembers.length; j++) {
         const employeeId = String(teamMembers[j] || '');
         if (!employeeId || employeeId === String(leadTechId)) {
           continue;
         }
 
-        const copiedTime = record.copy({
-          type: TIMEBILL_RECORD_TYPE,
-          id: sourceTimebillIds[i],
-          isDynamic: false
-        });
-        copiedTime.setValue({ fieldId: FIELD.EMPLOYEE, value: employeeId });
-        copiedTime.setValue({ fieldId: FIELD.PROCESSED, value: true });
-        const newTimebillId = copiedTime.save({
-          enableSourcing: true,
-          ignoreMandatoryFields: true
-        });
+        const overrides = {};
+        overrides[FIELD.EMPLOYEE] = employeeId;
+        overrides[FIELD.PROCESSED] = true;
+        overrides[FIELD.NX_IDEMPOTENCY_KEY] = '';
+        const newTimebillId = createTimebillFromSnapshot(sourceSnapshot, overrides, 'Team replication');
         createdTimebillIds.push(newTimebillId);
+        createdTimebillLinks.push({
+          sourceTimebillId: sourceTimebillId,
+          newTimebillId: newTimebillId,
+          employeeId: employeeId,
+          creationMethod: 'record.create from source field values',
+          mappedFields: sourceSnapshot.fieldIds,
+          overriddenFields: [
+            { fieldId: FIELD.EMPLOYEE, value: employeeId },
+            { fieldId: FIELD.PROCESSED, value: true },
+            { fieldId: FIELD.NX_IDEMPOTENCY_KEY, value: '' }
+          ]
+        });
         count++;
       }
     }
 
-    log.audit('Team replication complete', {
+    logAuditJson('Team replication create JSON', {
+      recordType: TIMEBILL_RECORD_TYPE,
+      taskId: task.id,
       sourceCount: sourceTimebillIds.length,
+      sourceTimebillIds: sourceTimebillIds,
       replicatedCount: count,
-      createdTimebillIds: createdTimebillIds
+      createdTimebillIds: createdTimebillIds,
+      createdTimebillLinks: createdTimebillLinks
     });
 
     return {
       count: count,
       createdTimebillIds: createdTimebillIds
     };
+  }
+
+  function getTimebillSnapshot(timebillId) {
+    const sourceTimebill = record.load({
+      type: TIMEBILL_RECORD_TYPE,
+      id: timebillId,
+      isDynamic: false
+    });
+    const values = {};
+    const skippedReadFields = [];
+    const fieldIds = [];
+
+    for (let i = 0; i < TIMEBILL_SNAPSHOT_FIELDS.length; i++) {
+      const fieldId = TIMEBILL_SNAPSHOT_FIELDS[i];
+      try {
+        const value = sourceTimebill.getValue({ fieldId: fieldId });
+        if (value !== null && value !== undefined && value !== '') {
+          values[fieldId] = value;
+          fieldIds.push(fieldId);
+        }
+      } catch (e) {
+        skippedReadFields.push({
+          fieldId: fieldId,
+          message: e.message
+        });
+      }
+    }
+
+    return {
+      sourceTimebillId: timebillId,
+      values: values,
+      fieldIds: fieldIds,
+      skippedReadFields: skippedReadFields
+    };
+  }
+
+  function createTimebillFromSnapshot(snapshot, overrides, label) {
+    const newTimebill = record.create({
+      type: TIMEBILL_RECORD_TYPE,
+      isDynamic: true
+    });
+    const skippedSetFields = [];
+    const mappedFields = [];
+    const overrideFields = [];
+    const overrideValues = overrides || {};
+    const overrideIds = Object.keys(overrideValues);
+    const presetOverrideFields = {};
+
+    if (Object.prototype.hasOwnProperty.call(overrideValues, FIELD.EMPLOYEE)) {
+      try {
+        newTimebill.setValue({
+          fieldId: FIELD.EMPLOYEE,
+          value: overrideValues[FIELD.EMPLOYEE]
+        });
+        overrideFields.push({
+          fieldId: FIELD.EMPLOYEE,
+          value: overrideValues[FIELD.EMPLOYEE]
+        });
+        presetOverrideFields[FIELD.EMPLOYEE] = true;
+      } catch (e) {
+        skippedSetFields.push({
+          fieldId: FIELD.EMPLOYEE,
+          value: overrideValues[FIELD.EMPLOYEE],
+          message: e.message
+        });
+      }
+    }
+
+    for (let i = 0; i < snapshot.fieldIds.length; i++) {
+      const fieldId = snapshot.fieldIds[i];
+      if (Object.prototype.hasOwnProperty.call(overrideValues, fieldId)) {
+        continue;
+      }
+      try {
+        newTimebill.setValue({
+          fieldId: fieldId,
+          value: snapshot.values[fieldId]
+        });
+        mappedFields.push({
+          fieldId: fieldId,
+          value: snapshot.values[fieldId]
+        });
+      } catch (e) {
+        skippedSetFields.push({
+          fieldId: fieldId,
+          value: snapshot.values[fieldId],
+          message: e.message
+        });
+      }
+    }
+
+    for (let j = 0; j < overrideIds.length; j++) {
+      const overrideFieldId = overrideIds[j];
+      if (presetOverrideFields[overrideFieldId]) {
+        continue;
+      }
+      try {
+        newTimebill.setValue({
+          fieldId: overrideFieldId,
+          value: overrideValues[overrideFieldId]
+        });
+        overrideFields.push({
+          fieldId: overrideFieldId,
+          value: overrideValues[overrideFieldId]
+        });
+      } catch (e) {
+        skippedSetFields.push({
+          fieldId: overrideFieldId,
+          value: overrideValues[overrideFieldId],
+          message: e.message
+        });
+      }
+    }
+
+    const createLog = {
+      recordType: TIMEBILL_RECORD_TYPE,
+      sourceTimebillId: snapshot.sourceTimebillId,
+      creationMethod: 'record.create from source field values',
+      mappedFields: mappedFields,
+      skippedReadFields: snapshot.skippedReadFields,
+      skippedSetFields: skippedSetFields,
+      overriddenFields: overrideFields
+    };
+
+    logAuditJson(label + ' timebill create attempt JSON', createLog);
+
+    let newTimebillId;
+    try {
+      newTimebillId = newTimebill.save({
+        enableSourcing: true,
+        ignoreMandatoryFields: true
+      });
+    } catch (e) {
+      createLog.message = e.message;
+      log.error(label + ' timebill create failed JSON', JSON.stringify(createLog));
+      throw e;
+    }
+
+    createLog.newTimebillId = newTimebillId;
+    logAuditJson(label + ' timebill created JSON', createLog);
+
+    return newTimebillId;
   }
 
   function updateOriginalTimebillProcessing(timebillId, relatedTimeEntryIds) {
@@ -583,7 +771,6 @@ define(['N/record', 'N/log', 'N/search'], function (record, log, search) {
     });
 
     setIfValue(salesOrder, 'entity', setupValues.customer);
-    setIfValue(salesOrder, 'custbody_nx_customer', setupValues.customer);
     setIfValue(salesOrder, 'trandate', setupValues.trandate);
     setIfValue(salesOrder, 'subsidiary', setupValues.subsidiary);
     setIfValue(salesOrder, 'location', setupValues.location);
