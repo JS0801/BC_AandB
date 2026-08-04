@@ -1012,7 +1012,7 @@ define(['N/record', 'N/log', 'N/search'], function (record, log, search) {
 
   function toNumber(value) {
     const numberValue = parseFloat(value);
-    return isNaN(numberValue) ? 0 : numberValue;
+    return isNaN(numberValue) ? 0 : numberValue.toFixed(2);
   }
 
   function roundHours(value) {
